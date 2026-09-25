@@ -86,6 +86,14 @@ import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        Thread.setDefaultUncaughtExceptionHandler { _, t ->
+            runCatching {
+                java.io.File(filesDir, "jupiter_crash.txt")
+                    .writeText(t.stackTraceToString())
+            }
+            android.util.Log.e("JUPITER_CRASH", "uncaught", t)
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
