@@ -1,6 +1,8 @@
 {
-  "name": "JupiterVision",
+  "name": "JupiterVision REMIXED",
   "description": "Sharp industrial tile launcher for Android with live mode flipping, side gesture panels, app lister, and focus overlay.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

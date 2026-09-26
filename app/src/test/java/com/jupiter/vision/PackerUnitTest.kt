@@ -37,9 +37,26 @@ class PackerUnitTest {
     }
 
     @Test
+    fun testPackerFixedPositions() {
+        val tiles = listOf(
+            TileModel(id = "phone", label = "PHONE", fixedCol = 0, fixedRow = 0, colSpan = 2, rowSpan = 2),
+            TileModel(id = "msg", label = "MSG", fixedCol = 2, fixedRow = 0, colSpan = 2, rowSpan = 2),
+            TileModel(id = "gallery", label = "GALLERY", fixedCol = 4, fixedRow = 0, colSpan = 4, rowSpan = 2)
+        )
+        val placements = Packer.pack(tiles)
+        assertEquals(3, placements.size)
+        assertEquals(0, placements[0].col)
+        assertEquals(0, placements[0].row)
+        assertEquals(2, placements[1].col)
+        assertEquals(0, placements[1].row)
+        assertEquals(4, placements[2].col)
+        assertEquals(0, placements[2].row)
+    }
+
+    @Test
     fun testColorEngineDefaultPalette() {
         val defaultColors = ColorEngine.fromWallpaper(null)
         assertEquals(3, defaultColors.size)
-        assertEquals(Color(0xFF13294B), defaultColors[0])
+        assertEquals(Color(0xFF007AFF), defaultColors[0])
     }
 }

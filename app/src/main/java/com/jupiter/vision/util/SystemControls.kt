@@ -1,8 +1,10 @@
 package com.jupiter.vision.util
 
+import android.app.WallpaperManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
 import android.hardware.camera2.CameraManager
 import android.os.BatteryManager
 import android.provider.MediaStore
@@ -12,6 +14,18 @@ import android.widget.Toast
 object SystemControls {
 
     private var isTorchOn = false
+
+    fun setDeviceWallpaper(context: Context, bitmap: Bitmap): Boolean {
+        return try {
+            val wm = WallpaperManager.getInstance(context)
+            wm.setBitmap(bitmap)
+            Toast.makeText(context, "Device wallpaper updated to Jupiter Vision!", Toast.LENGTH_SHORT).show()
+            true
+        } catch (e: Throwable) {
+            Toast.makeText(context, "Could not set wallpaper: ${e.message}", Toast.LENGTH_SHORT).show()
+            false
+        }
+    }
 
     fun toggleTorch(context: Context): Boolean {
         return try {
@@ -56,6 +70,7 @@ object SystemControls {
         try {
             val intent = when (actionKey.lowercase()) {
                 "phone" -> Intent(Intent.ACTION_DIAL)
+                "clock", "time" -> Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS)
                 "msg" -> Intent(Intent.ACTION_MAIN).apply {
                     addCategory(Intent.CATEGORY_APP_MESSAGING)
                 }

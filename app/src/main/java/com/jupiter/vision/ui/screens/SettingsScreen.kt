@@ -2,6 +2,7 @@ package com.jupiter.vision.ui.screens
 
 import android.content.Intent
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,10 +34,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.jupiter.vision.ui.theme.InterFontFamily
 
 @Composable
 fun SettingsScreen(
@@ -44,8 +45,10 @@ fun SettingsScreen(
     onGutterChange: (Int) -> Unit,
     currentFlipInterval: Int,
     onFlipIntervalChange: (Int) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onSetDeviceWallpaper: (() -> Unit)? = null
 ) {
+    BackHandler { onBack() }
     val context = LocalContext.current
 
     Column(
@@ -72,14 +75,14 @@ fun SettingsScreen(
                     color = Color.White,
                     fontWeight = FontWeight.Black,
                     fontSize = 18.sp,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = InterFontFamily,
                     letterSpacing = 1.sp
                 )
                 Text(
                     text = "JUPITERVISION LAUNCHER v0.2.0",
                     color = Color(0xFF00E5FF),
                     fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = InterFontFamily
                 )
             }
         }
@@ -92,7 +95,7 @@ fun SettingsScreen(
             color = Color(0xFFFF6A00),
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace
+            fontFamily = InterFontFamily
         )
         Spacer(modifier = Modifier.height(8.dp))
         Row(
@@ -115,7 +118,7 @@ fun SettingsScreen(
                         color = if (selected) Color.Black else Color.White,
                         fontWeight = FontWeight.Black,
                         fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = InterFontFamily
                     )
                 }
             }
@@ -129,7 +132,7 @@ fun SettingsScreen(
             color = Color(0xFF00E5FF),
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace
+            fontFamily = InterFontFamily
         )
         Spacer(modifier = Modifier.height(8.dp))
         Row(
@@ -152,7 +155,7 @@ fun SettingsScreen(
                         color = if (selected) Color.Black else Color.White,
                         fontWeight = FontWeight.Black,
                         fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = InterFontFamily
                     )
                 }
             }
@@ -166,7 +169,7 @@ fun SettingsScreen(
             color = Color.White.copy(alpha = 0.6f),
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace
+            fontFamily = InterFontFamily
         )
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -199,8 +202,31 @@ fun SettingsScreen(
                 "CONFIGURE DEFAULT HOME APP",
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace
+                fontFamily = InterFontFamily
             )
+        }
+
+        if (onSetDeviceWallpaper != null) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Button(
+                onClick = onSetDeviceWallpaper,
+                shape = RoundedCornerShape(0.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF00E5FF),
+                    contentColor = Color.Black
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+                    .testTag("set_device_wallpaper_btn")
+            ) {
+                Text(
+                    "APPLY JUPITER VISION OS WALLPAPER",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = InterFontFamily
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(30.dp))
@@ -219,13 +245,13 @@ fun SettingsScreen(
                     color = Color.White,
                     fontWeight = FontWeight.Black,
                     fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = InterFontFamily
                 )
                 Text(
-                    text = "· Grid: 8 units per row (4 columns 1x1 equivalent)\n· Motion: Cubic bezier (0.4, 0.0, 0.2, 1.0)\n· Wallpaper: Multi-slice backdrop with radial overlay\n· Aesthetics: 0.dp sharp industrial brutalism\n· Target API: Android 7.0+ (API 24 to 34+)",
+                    text = "· Font: Inter Typeface (Bundled TTF)\n· Clock: 4x1 Top-Grid Invisible Tile\n· Icons: Scaled Pure Icon Mode\n· Wallpaper: Multi-slice backdrop with radial overlay\n· Aesthetics: 0.dp sharp industrial brutalism\n· Target API: Android 7.0+ (API 24 to 36)",
                     color = Color.White.copy(alpha = 0.6f),
                     fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = InterFontFamily
                 )
             }
         }
