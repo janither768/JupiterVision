@@ -22,8 +22,18 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import com.jupiter.vision.engine.VisionEngine
+import com.jupiter.vision.model.VenueItem
+import com.jupiter.vision.model.VisionProfileRepository
+import com.jupiter.vision.model.WeekScheduleItem
+import com.jupiter.vision.ui.vision.*
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +53,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -241,6 +252,52 @@ private fun HomeScreen(
         }
     }
 
+    // Battery, Date, Weather Telemetry
+    val batteryPercent = remember {
+        val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+        bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 85
+    }
+    val dateString = remember(timeString) {
+        SimpleDateFormat("EEEE, MMM d", Locale.getDefault()).format(Date()).uppercase()
+    }
+    val weatherTemp = "22°C"
+
+    // All installed apps loaded for Vision Engine
+    var allInstalledApps by remember { mutableStateOf<List<com.jupiter.vision.model.AppInfo>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        allInstalledApps = AppLoader.loadInstalledApps(ctx)
+    }
+
+    // Vision Profile & Engine State
+    var isFirstRun by remember { mutableStateOf(VisionProfileRepository.isFirstRun(ctx)) }
+    var currentVisionScreen by remember {
+        mutableStateOf(if (isFirstRun) VisionScreen.FIRST_RUN_WELCOME else VisionScreen.NONE)
+    }
+    var showVisionMenu by remember { mutableStateOf(false) }
+    var showBirthdayModal by remember { mutableStateOf(false) }
+    var showCorrectionDialog by remember { mutableStateOf(false) }
+
+    var userName by remember { mutableStateOf(VisionProfileRepository.getName(ctx)) }
+    var userBirthday by remember { mutableStateOf(VisionProfileRepository.getBirthday(ctx)) }
+    val venuesList = remember { mutableStateListOf<VenueItem>().apply { addAll(VisionProfileRepository.getVenues(ctx)) } }
+    val weekCalendarMap = remember {
+        val map = mutableStateMapOf<String, WeekScheduleItem>()
+        map.putAll(VisionProfileRepository.getWeekCalendar(ctx))
+        map
+    }
+    var editingVenue by remember { mutableStateOf<VenueItem?>(null) }
+    var isNewVenue by remember { mutableStateOf(false) }
+
+    var engineSnapshot by remember {
+        mutableStateOf(VisionEngine.evaluateState(ctx, allInstalledApps))
+    }
+    LaunchedEffect(allInstalledApps, isFirstRun) {
+        while (true) {
+            engineSnapshot = VisionEngine.evaluateState(ctx, allInstalledApps)
+            delay(15000L)
+        }
+    }
+
     // Resolve system apps & third party apps
     LaunchedEffect(palette, isColorEngineEnabled, deviceImages, deviceAudio, realNotifications) {
         val systemResolutions = AppLoader.resolveSystemRoles(ctx)
@@ -390,8 +447,20 @@ private fun HomeScreen(
     // Edge Panels state
     var openPanel by remember { mutableStateOf(PanelKind.NONE) }
 
-    BackHandler(enabled = openPanel != PanelKind.NONE || focusedTile != null || propertiesTile != null || swappingSourceTile != null || migratingFolderTile != null) {
-        if (migratingFolderTile != null) {
+    BackHandler(enabled = currentVisionScreen != VisionScreen.NONE || showVisionMenu || showBirthdayModal || showCorrectionDialog || openPanel != PanelKind.NONE || focusedTile != null || propertiesTile != null || swappingSourceTile != null || migratingFolderTile != null) {
+        if (showBirthdayModal) {
+            showBirthdayModal = false
+        } else if (showCorrectionDialog) {
+            showCorrectionDialog = false
+        } else if (showVisionMenu) {
+            showVisionMenu = false
+        } else if (currentVisionScreen == VisionScreen.VENUE_EDITOR) {
+            currentVisionScreen = VisionScreen.VENUES_LIST
+        } else if (currentVisionScreen == VisionScreen.VENUES_LIST || currentVisionScreen == VisionScreen.WEEK_CALENDAR) {
+            currentVisionScreen = VisionScreen.VISION_PROFILE
+        } else if (currentVisionScreen == VisionScreen.VISION_PROFILE || currentVisionScreen == VisionScreen.ENGINE_STATUS_DIAGNOSTIC) {
+            currentVisionScreen = if (isFirstRun) VisionScreen.FIRST_RUN_WELCOME else VisionScreen.NONE
+        } else if (migratingFolderTile != null) {
             migratingFolderTile = null
         } else if (swappingSourceTile != null) {
             swappingSourceTile = null
@@ -540,6 +609,18 @@ private fun HomeScreen(
                         propertiesBounds = bounds
                     }
                 },
+                engineSnapshot = engineSnapshot,
+                timeString = timeString,
+                dateString = dateString,
+                batteryPercent = batteryPercent,
+                weatherTemp = weatherTemp,
+                onVisionHomeAppClick = { app ->
+                    AppHistoryManager.recordAppLaunch(ctx, app.packageName)
+                    SystemControls.launchPackage(ctx, app.packageName)
+                },
+                onVisionHomeLongPress = {
+                    showVisionMenu = true
+                },
                 gutter = gutterDp.dp,
                 modifier = Modifier
                     .weight(1f)
@@ -631,6 +712,172 @@ private fun HomeScreen(
                     propertiesTile = null
                     propertiesBounds = null
                 }
+            )
+        }
+
+        // Vision Screens (First Run, Profile, Venues, Calendar, Diagnostics)
+        if (currentVisionScreen != VisionScreen.NONE) {
+            AnimatedContent(
+                targetState = currentVisionScreen,
+                transitionSpec = {
+                    slideInHorizontally(
+                        initialOffsetX = { fullWidth -> fullWidth },
+                        animationSpec = tween(durationMillis = 300, easing = IndustrialBezier)
+                    ) togetherWith slideOutHorizontally(
+                        targetOffsetX = { fullWidth -> -fullWidth },
+                        animationSpec = tween(durationMillis = 300, easing = IndustrialBezier)
+                    )
+                },
+                label = "VisionScreenTransition"
+            ) { targetScreen ->
+                when (targetScreen) {
+                    VisionScreen.FIRST_RUN_WELCOME -> {
+                        VisionFirstRunWelcomeScreen(
+                            onBeginInterview = {
+                                currentVisionScreen = VisionScreen.VISION_PROFILE
+                            },
+                            onSilentLearning = {
+                                VisionProfileRepository.setFirstRunCompleted(ctx)
+                                isFirstRun = false
+                                currentVisionScreen = VisionScreen.NONE
+                                engineSnapshot = VisionEngine.evaluateState(ctx, allInstalledApps)
+                            }
+                        )
+                    }
+                    VisionScreen.VISION_PROFILE -> {
+                        VisionProfileMainScreen(
+                            userName = userName,
+                            onNameChange = {
+                                userName = it
+                                VisionProfileRepository.setName(ctx, it)
+                            },
+                            userBirthday = userBirthday,
+                            onOpenBirthday = { showBirthdayModal = true },
+                            onOpenVenues = { currentVisionScreen = VisionScreen.VENUES_LIST },
+                            onOpenWeekCalendar = { currentVisionScreen = VisionScreen.WEEK_CALENDAR },
+                            onSaveAndExit = {
+                                currentVisionScreen = VisionScreen.ENGINE_WORKING_SAVING
+                            }
+                        )
+                    }
+                    VisionScreen.VENUES_LIST -> {
+                        VenuesScreen(
+                            venues = venuesList,
+                            onAddVenue = {
+                                editingVenue = VenueItem(name = "", type = "OTHER")
+                                isNewVenue = true
+                                currentVisionScreen = VisionScreen.VENUE_EDITOR
+                            },
+                            onSelectVenue = {
+                                editingVenue = it
+                                isNewVenue = false
+                                currentVisionScreen = VisionScreen.VENUE_EDITOR
+                            },
+                            onBack = { currentVisionScreen = VisionScreen.VISION_PROFILE }
+                        )
+                    }
+                    VisionScreen.VENUE_EDITOR -> {
+                        editingVenue?.let { v ->
+                            VenueEditorScreen(
+                                venue = v,
+                                isNew = isNewVenue,
+                                onSave = { updated ->
+                                    if (isNewVenue) {
+                                        venuesList.add(updated)
+                                    } else {
+                                        val idx = venuesList.indexOfFirst { it.id == updated.id }
+                                        if (idx >= 0) venuesList[idx] = updated
+                                    }
+                                    VisionProfileRepository.saveVenues(ctx, venuesList)
+                                    currentVisionScreen = VisionScreen.VENUES_LIST
+                                },
+                                onDelete = { del ->
+                                    venuesList.removeAll { it.id == del.id }
+                                    VisionProfileRepository.saveVenues(ctx, venuesList)
+                                    currentVisionScreen = VisionScreen.VENUES_LIST
+                                },
+                                onCancel = { currentVisionScreen = VisionScreen.VENUES_LIST }
+                            )
+                        }
+                    }
+                    VisionScreen.WEEK_CALENDAR -> {
+                        WeekCalendarScreen(
+                            calendarMap = weekCalendarMap,
+                            onSaveSchedule = { day: String, item: WeekScheduleItem ->
+                                weekCalendarMap[day] = item
+                                VisionProfileRepository.saveWeekCalendar(ctx, weekCalendarMap)
+                            },
+                            onBack = { currentVisionScreen = VisionScreen.VISION_PROFILE }
+                        )
+                    }
+                    VisionScreen.ENGINE_WORKING_SAVING -> {
+                        VisionEngineWorkingTransitionScreen(
+                            onFinished = {
+                                VisionProfileRepository.setFirstRunCompleted(ctx)
+                                isFirstRun = false
+                                currentVisionScreen = VisionScreen.NONE
+                                engineSnapshot = VisionEngine.evaluateState(ctx, allInstalledApps)
+                            }
+                        )
+                    }
+                    VisionScreen.ENGINE_STATUS_DIAGNOSTIC -> {
+                        VisionEngineStatusScreen(
+                            snapshot = engineSnapshot,
+                            onClose = { currentVisionScreen = VisionScreen.NONE }
+                        )
+                    }
+                    VisionScreen.NONE -> {}
+                }
+            }
+        }
+
+        // Birthday Modal Popup
+        if (showBirthdayModal) {
+            BirthdayModalPopup(
+                currentBirthday = userBirthday,
+                onDismiss = { showBirthdayModal = false },
+                onSave = {
+                    userBirthday = it
+                    VisionProfileRepository.setBirthday(ctx, it)
+                    showBirthdayModal = false
+                }
+            )
+        }
+
+        // Long Press Vision Home Menu
+        if (showVisionMenu) {
+            VisionHomeLongPressMenu(
+                onOpenProfile = {
+                    showVisionMenu = false
+                    currentVisionScreen = VisionScreen.VISION_PROFILE
+                },
+                onOpenStatus = {
+                    showVisionMenu = false
+                    currentVisionScreen = VisionScreen.ENGINE_STATUS_DIAGNOSTIC
+                },
+                onOpenCorrection = {
+                    showVisionMenu = false
+                    showCorrectionDialog = true
+                },
+                onDisableForToday = {
+                    showVisionMenu = false
+                    VisionProfileRepository.disableEngineUntilMidnight(ctx)
+                    engineSnapshot = VisionEngine.evaluateState(ctx, allInstalledApps)
+                },
+                onDismiss = { showVisionMenu = false }
+            )
+        }
+
+        // Correction Dialog
+        if (showCorrectionDialog) {
+            VisionEngineCorrectionDialog(
+                currentState = engineSnapshot.state,
+                onCorrect = { correction ->
+                    VisionProfileRepository.recordCorrection(ctx, correction)
+                    showCorrectionDialog = false
+                    engineSnapshot = VisionEngine.evaluateState(ctx, allInstalledApps)
+                },
+                onDismiss = { showCorrectionDialog = false }
             )
         }
     }

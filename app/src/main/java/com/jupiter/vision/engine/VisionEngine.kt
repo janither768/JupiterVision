@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 import android.media.AudioManager
 import android.os.Build
 import com.jupiter.vision.model.AppInfo
+import com.jupiter.vision.model.VisionProfileRepository
 import java.util.Calendar
 
 /**
@@ -74,6 +75,19 @@ object VisionEngine {
         installedApps: List<AppInfo>,
         calendar: Calendar = Calendar.getInstance()
     ): EngineSnapshot {
+        // Check if engine is temporarily disabled for today
+        if (VisionProfileRepository.isEngineDisabledToday(context)) {
+            val idleApps = filterContextualApps(installedApps, VisionState.IDLE, 720)
+            return EngineSnapshot(
+                state = VisionState.IDLE,
+                statusText = "IDLE (DISABLED FOR TODAY)",
+                topBarStatus = "IDLE",
+                contextualApps = idleApps,
+                isAppRowVisible = true,
+                learningDay = getLearningDay(context)
+            )
+        }
+
         val dayOfWeek = calendar.get(Calendar.DAY_OF_WEEK)
         val hour = calendar.get(Calendar.HOUR_OF_DAY)
         val minute = calendar.get(Calendar.MINUTE)
@@ -82,13 +96,38 @@ object VisionEngine {
         val learningDay = getLearningDay(context)
         val isFirstWeek = learningDay <= 7
 
+        val dayKey = when (dayOfWeek) {
+            Calendar.MONDAY -> "MONDAY"
+            Calendar.TUESDAY -> "TUESDAY"
+            Calendar.WEDNESDAY -> "WEDNESDAY"
+            Calendar.THURSDAY -> "THURSDAY"
+            Calendar.FRIDAY -> "FRIDAY"
+            Calendar.SATURDAY -> "SATURDAY"
+            else -> "SUNDAY"
+        }
+
+        val calendarMap = VisionProfileRepository.getWeekCalendar(context)
+        val todaySched = calendarMap[dayKey]
+        fun parseTimeToMinutes(timeStr: String?, defaultMins: Int): Int {
+            if (timeStr.isNullOrEmpty()) return defaultMins
+            return try {
+                val parts = timeStr.split(":")
+                parts[0].trim().toInt() * 60 + parts[1].trim().toInt()
+            } catch (_: Exception) {
+                defaultMins
+            }
+        }
+
+        val wakeMinutes = parseTimeToMinutes(todaySched?.wakeTime, 6 * 60)
+        val sleepMinutes = parseTimeToMinutes(todaySched?.sleepTime, 22 * 60)
+
         // Weekday definition: Monday to Friday
         val isWeekday = dayOfWeek in Calendar.MONDAY..Calendar.FRIDAY
         val isSaturday = dayOfWeek == Calendar.SATURDAY
         val isSunday = dayOfWeek == Calendar.SUNDAY
 
-        // 1. Night first (sleep time 22:00 -> 06:00 always overrides everything)
-        if (nowMinutes >= 22 * 60 || nowMinutes < 6 * 60) {
+        // 1. Night first (sleep time always overrides everything)
+        if (nowMinutes >= sleepMinutes || nowMinutes < wakeMinutes) {
             applySystemAction(context, VisionState.NIGHT)
             return EngineSnapshot(
                 state = VisionState.NIGHT,

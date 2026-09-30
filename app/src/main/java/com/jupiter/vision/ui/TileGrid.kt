@@ -47,6 +47,7 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.jupiter.vision.engine.VisionEngine
 import com.jupiter.vision.model.AppInfo
 import com.jupiter.vision.model.ColorEngine
 import com.jupiter.vision.model.TileMode
@@ -122,6 +123,13 @@ fun TileGrid(
     onTileClick: (TileModel) -> Unit,
     onOpenMiniApp: (TileModel, Rect) -> Unit,
     onOpenProperties: (TileModel, Rect) -> Unit,
+    engineSnapshot: VisionEngine.EngineSnapshot? = null,
+    timeString: String = "",
+    dateString: String = "",
+    batteryPercent: Int = 100,
+    weatherTemp: String = "22°C",
+    onVisionHomeAppClick: (AppInfo) -> Unit = {},
+    onVisionHomeLongPress: () -> Unit = {},
     gutter: Dp = 4.dp,
     modifier: Modifier = Modifier,
 ) {
@@ -163,6 +171,8 @@ fun TileGrid(
 
     // Cached TextPaints and icon paints
     val textPaints = remember { CanvasGridPaints(density.density) }
+    val visionPaints = remember { VisionHomePaints(density.density, Typeface.create("sans-serif", Typeface.NORMAL)) }
+    val visionHitBoxes = remember { mutableListOf<VisionHomeAppHitBox>() }
 
     // Ghost Echo Sonar Ping Animation State (Square Icon Tiles)
     var lastPingTimeSec by remember { mutableFloatStateOf(-5f) }
@@ -221,7 +231,11 @@ fun TileGrid(
 
                         val touchDownX = down.position.x
                         val touchDownY = down.position.y
-                        val gridY = touchDownY + scrollY
+                        val canvasH = size.height.toFloat()
+                        val hasVisionHome = (engineSnapshot != null)
+                        val contentY = touchDownY + scrollY
+                        val isTouchOnVisionHome = hasVisionHome && (contentY < canvasH)
+                        val gridY = if (isTouchOnVisionHome) -9999f else (contentY - canvasH)
 
                         if (migratingFolderTile != null) {
                             val availableW = size.width - horizontalPaddingPx * 2f
@@ -297,7 +311,7 @@ fun TileGrid(
                         }
 
                         // Find hit tile
-                        val hitTile = findTileAt(
+                        val hitTile = if (isTouchOnVisionHome) null else findTileAt(
                             systemTiles = systemTiles,
                             thirdPartyTiles = thirdPartyTiles,
                             animStateMap = animStateMap,
@@ -320,9 +334,12 @@ fun TileGrid(
                         var folderSwipeDragX = 0f
 
                         val holdTimerJob = coroutineScope.launch {
-                            if (!isSwapMode) {
-                                delay(450L)
-                                if (pressedTileId != null && !isScrolling && !isFolderSwipe) {
+                            delay(450L)
+                            if (!isScrolling) {
+                                if (isTouchOnVisionHome) {
+                                    holdTriggered = true
+                                    onVisionHomeLongPress()
+                                } else if (!isSwapMode && pressedTileId != null && !isFolderSwipe) {
                                     isHeld = true
                                     heldTileId = pressedTileId
                                     holdTriggered = true
@@ -370,7 +387,14 @@ fun TileGrid(
 
                             if (!change.pressed) {
                                 holdTimerJob.cancel()
-                                if (isHeld && heldTileId != null) {
+                                if (isTouchOnVisionHome && !isScrolling && !holdTriggered) {
+                                    val hitApp = visionHitBoxes.firstOrNull { box ->
+                                        touchDownX in box.left..box.right && touchDownY in box.top..box.bottom
+                                    }
+                                    if (hitApp != null) {
+                                        onVisionHomeAppClick(hitApp.app)
+                                    }
+                                } else if (isHeld && heldTileId != null) {
                                     val tile = (systemTiles + thirdPartyTiles).firstOrNull { it.id == heldTileId }
                                     val animState = animStateMap[heldTileId]
                                     if (tile != null && animState != null) {
@@ -497,6 +521,9 @@ fun TileGrid(
             val availableW = canvasW - horizontalPaddingPx * 2f
             val unitPx = (availableW - (units - 1) * gutterPx) / units
 
+            val hasVisionHome = (engineSnapshot != null)
+            val gridBaseY = if (hasVisionHome) canvasH else 0f
+
             // 1. Calculate and update System Zone tile targets
             var maxSysRow = 0
             for (tile in systemTiles) {
@@ -506,7 +533,7 @@ fun TileGrid(
                 if (endR > maxSysRow) maxSysRow = endR
 
                 val targetX = horizontalPaddingPx + c * (unitPx + gutterPx)
-                val targetY = topPaddingPx + r * (unitPx + gutterPx)
+                val targetY = gridBaseY + topPaddingPx + r * (unitPx + gutterPx)
                 val targetW = tile.colSpan * unitPx + (tile.colSpan - 1) * gutterPx
                 val targetH = tile.rowSpan * unitPx + (tile.rowSpan - 1) * gutterPx
 
@@ -539,7 +566,7 @@ fun TileGrid(
 
             // 2. Calculate and update Third Party Zone tile targets
             var max3rdRow = 0
-            val thirdPartyBaseY = topPaddingPx + sysZoneHeight + zoneGapPx
+            val thirdPartyBaseY = gridBaseY + topPaddingPx + sysZoneHeight + zoneGapPx
             for (tile in thirdPartyTiles) {
                 val c = tile.fixedCol ?: tile.gridCol
                 val r = tile.fixedRow ?: tile.gridRow
@@ -580,6 +607,25 @@ fun TileGrid(
 
             // 3. Clip strictly to the scrollable area below the header.
             clipRect(0f, 0f, canvasW, canvasH) {
+                // Render Vision Home when scrolled in view
+                if (hasVisionHome && scrollY < canvasH) {
+                    with(VisionHomeRenderer) {
+                        drawVisionHome(
+                            offsetY = -scrollY,
+                            canvasW = canvasW,
+                            canvasH = canvasH,
+                            timeString = timeString,
+                            dateString = dateString,
+                            batteryPercent = batteryPercent,
+                            weatherTemp = weatherTemp,
+                            snapshot = engineSnapshot!!,
+                            fluidTimeSec = fluidTimeSec,
+                            paints = visionPaints,
+                            outHitBoxes = visionHitBoxes
+                        )
+                    }
+                }
+
                 val allTiles = systemTiles + thirdPartyTiles
 
                 // Ghost Echo Sonar Ping: Every 5s, randomly select exactly one square tile from visible scrolled viewport (EXCLUDING FOLDERS)
@@ -618,8 +664,8 @@ fun TileGrid(
                     val tw = state.currentW
                     val th = state.currentH
 
-                    // Bottom edge culling only
-                    if (ty > canvasH + 10f) continue
+                    // Top and bottom edge culling
+                    if (ty > canvasH + 10f || ty + th < -10f) continue
 
                     val isCurrentPressed = (tile.id == pressedTileId)
                     val isCurrentHeld = (tile.id == heldTileId)
