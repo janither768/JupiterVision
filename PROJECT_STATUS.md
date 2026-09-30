@@ -58,7 +58,12 @@
 - **Borderless**: Clean floating card with accent color theming.
 - **Functions**: Live directional resizing (1×1, 2×1, 1×2, 2×2, 0.5×0.5 micro), app swapping, folder migration, and color palette customization.
 
-### E. Color Engine (`ColorEngine.kt`)
+### E. Vision Home & Vision Engine (`VisionHomeRenderer.kt`, `VisionEngine.kt`)
+- **Deterministic 9-State Machine**: Night, Gym, Work, Home, Settle, Transit, Focus, Learning, Idle evaluated in strict priority.
+- **Silent Inference**: Zero-chatbot, zero-LLM deterministic lifestyle cycle based on usage stats, time windows, and geofence events.
+- **Vision Home Layout**: Edge-to-edge canvas page with fixed top bar, cinematic center visual (radar/ghost echo, map, grids, deep space), contextual app row, and status indicator.
+
+### F. Color Engine (`ColorEngine.kt`)
 - **Vibrant Wallpaper Rules**: Color extraction with boosted HSV saturation (75%-100%) and brightness (70%-98%), strictly avoiding muddy/dimmed hues.
 - **Default System Palette (When Color Engine is OFF)**:
   - Phone, Settings, Camera, Messages -> Mid Dark Grey (`#2E3038`)
@@ -80,6 +85,7 @@
   - Replaced bulky button banners with fluid horizontal area swiping and header indicator pills.
   - Overlay footprint made compact and centered.
 - **Tile Properties Overlay Overhaul**: Removed border and upgraded to GPU matrix transforms.
+- **Vision Home & Vision Engine Subsystems**: Complete 9-state machine with silent anticipation and cinematic Canvas rendering.
 - **Artifact Preparation**: Removed outdated APKs and generated clean **`Jupitervision_2112.16_II_fixed.apk`**.
 
 ---
@@ -98,7 +104,10 @@
     ├── build.gradle.kts               # App module build definition
     └── src/main/java/com/jupiter/vision/
         ├── MainActivity.kt            # Main entry point & system coordinating state
+        ├── engine/
+        │   └── VisionEngine.kt        # Deterministic 9-state Lifestyle Cycle engine
         ├── ui/
+        │   ├── VisionHomeRenderer.kt  # Edge-to-edge cinematic Vision Home canvas page
         │   ├── TileGrid.kt            # Single canvas rendering engine & gestures
         │   ├── FocusOverlay.kt        # GPU matrix focus overlay & mini-apps
         │   ├── TilePropertiesOverlay.kt # Properties, live resize & swapping
