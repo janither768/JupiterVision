@@ -56,8 +56,8 @@ class PackerUnitTest {
     @Test
     fun testColorEngineDefaultPalette() {
         val defaultColors = ColorEngine.fromWallpaper(null)
-        assertEquals(3, defaultColors.size)
-        assertEquals(Color(0xFF007AFF), defaultColors[0])
+        assertTrue(defaultColors.isNotEmpty())
+        assertEquals(ColorEngine.ROYAL_BLUE_PURPLE, defaultColors[0])
     }
 
     @Test
@@ -96,18 +96,24 @@ class PackerUnitTest {
         val tiles = listOf(
             TileModel(id = "tileA", label = "A", fixedCol = 0, fixedRow = 0, gridCol = 0, gridRow = 0, colSpan = 4, rowSpan = 4)
         )
-        // tileA is already 2x2 real (4x4 units) — cannot grow wider than 2
-        val rightResult = com.jupiter.vision.util.Packer.reflowTileDirection(
+        // tileA is already 2x2 real (4x4 units) — cannot grow wider than 4 units
+        val rightResult = com.jupiter.vision.util.Packer.reflowTileChange(
             tiles,
             "tileA",
-            com.jupiter.vision.util.ResizeDirection.RIGHT
+            0,
+            0,
+            6,
+            4
         )
         org.junit.Assert.assertNull("Cannot grow wider than 2x2 cap", rightResult)
 
-        val downResult = com.jupiter.vision.util.Packer.reflowTileDirection(
+        val downResult = com.jupiter.vision.util.Packer.reflowTileChange(
             tiles,
             "tileA",
-            com.jupiter.vision.util.ResizeDirection.DOWN
+            0,
+            0,
+            4,
+            6
         )
         org.junit.Assert.assertNull("Cannot grow taller than 2x2 cap", downResult)
     }

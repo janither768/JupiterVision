@@ -1,7 +1,7 @@
 # JupiterVision — Project Status & Architecture Report
 
-**Version:** 2112.16 VisionEngine  
-**Target Build:** `2112.16_VisionEngine.apk` / `Jupitervision_2112.16_II_fixed.apk`  
+**Version:** 2112.17_II  
+**Target Build:** `Jupitervision_2112.17_II.apk`  
 **Platform:** Android (Jetpack Compose + Single Hardware Canvas Engine)  
 **Repository:** `janither768/JupiterVision`  
 
@@ -9,7 +9,11 @@
 
 ## 1. Executive Summary
 
-**JupiterVision** is a next-generation cybernetic launcher and personal computing interface for Android. Powered by a single-canvas rendering architecture, real-time procedural packing, dynamic palette color engines, modular micro/mini-app overlays, and the Vision Home + Vision Engine ecosystem, JupiterVision reimagines the Android home screen into a cohesive visual matrix.
+**JupiterVision 2112.17_II** refines the dual-page launcher:
+- **Band 1 Full Map Fill**: Band 1 is fully filled edge-to-edge by the satellite map. The top edge and the junction between Band 1 and Band 2 are blended with smooth multi-stop gradient fades scaling down to `#1A1A1A`.
+- **Band 3 Cinematic Separator**: The 1dp vertical divider in Band 3 is cleanly cut before the top and bottom edges (18dp inset) for a refined, floating industrial aesthetic.
+- **Dual-Page Horizontal Pager**: Smooth horizontal page transitions between Vision Home (Page 0) and Tile Grid (Page 1) with full edge panel gestures preserved on the right screen border.
+- **Unified Backdrop**: Band 3 shares the identical dimmed wallpaper backdrop (`alpha = 0.22` over `#000000`) used in the Tile Grid.
 
 ---
 

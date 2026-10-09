@@ -10,6 +10,7 @@ import android.os.BatteryManager
 import android.provider.MediaStore
 import android.provider.Settings
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 
 object SystemControls {
 
@@ -51,9 +52,13 @@ object SystemControls {
 
     fun getBatteryLevel(context: Context): Int {
         return try {
-            val batteryStatus: Intent? = IntentFilter(Intent.ACTION_BATTERY_CHANGED).let { filter ->
-                context.registerReceiver(null, filter)
-            }
+            val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            val batteryStatus: Intent? = ContextCompat.registerReceiver(
+                context,
+                null,
+                filter,
+                ContextCompat.RECEIVER_EXPORTED
+            )
             val level: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
             val scale: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
             if (level >= 0 && scale > 0) {
@@ -61,7 +66,7 @@ object SystemControls {
             } else {
                 85
             }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             85
         }
     }

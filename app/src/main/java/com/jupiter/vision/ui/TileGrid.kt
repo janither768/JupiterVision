@@ -235,7 +235,8 @@ fun TileGrid(
                         val hasVisionHome = (engineSnapshot != null)
                         val contentY = touchDownY + scrollY
                         val isTouchOnVisionHome = hasVisionHome && (contentY < canvasH)
-                        val gridY = if (isTouchOnVisionHome) -9999f else (contentY - canvasH)
+                        val gridBaseY = if (hasVisionHome) canvasH else 0f
+                        val gridY = if (isTouchOnVisionHome) -9999f else (contentY - gridBaseY)
 
                         if (migratingFolderTile != null) {
                             val availableW = size.width - horizontalPaddingPx * 2f
@@ -332,6 +333,9 @@ fun TileGrid(
                         var isScrolling = false
                         var isFolderSwipe = false
                         var folderSwipeDragX = 0f
+                        val touchSlopPx = with(density) { 14.dp.toPx() }
+                        var totalDragDistX = 0f
+                        var totalDragDistY = 0f
 
                         val holdTimerJob = coroutineScope.launch {
                             delay(450L)
@@ -353,6 +357,8 @@ fun TileGrid(
                             velocityTracker.addPosition(change.uptimeMillis, change.position)
 
                             val drag = change.positionChange()
+                            totalDragDistX += drag.x
+                            totalDragDistY += drag.y
 
                             if (isHeld) {
                                 dragAccumX += drag.x
@@ -361,7 +367,7 @@ fun TileGrid(
                                 if (hitTile != null && hitTile.isFolder && !isScrolling) {
                                     val pageCount = max(1, (hitTile.folderApps.size + 3) / 4)
                                     if (pageCount > 1 && !isFolderSwipe) {
-                                        if (abs(drag.x) > 6f && abs(drag.x) > abs(drag.y) * 1.3f) {
+                                        if (abs(totalDragDistX) > 16f && abs(totalDragDistX) > abs(totalDragDistY) * 1.3f) {
                                             isFolderSwipe = true
                                             holdTimerJob.cancel()
                                         }
@@ -372,10 +378,16 @@ fun TileGrid(
                                     change.consume()
                                 } else {
                                     if (!isScrolling) {
-                                        if (abs(drag.y) > 4f || abs(drag.x) > 4f) {
+                                        val absDx = abs(totalDragDistX)
+                                        val absDy = abs(totalDragDistY)
+                                        if (absDy > touchSlopPx && absDy >= absDx * 0.8f) {
                                             holdTimerJob.cancel()
                                             isScrolling = true
                                             pressedTileId = null
+                                        } else if (absDx > touchSlopPx && absDx > absDy * 1.3f) {
+                                            holdTimerJob.cancel()
+                                            pressedTileId = null
+                                            break
                                         }
                                     }
                                     if (isScrolling) {

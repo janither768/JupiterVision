@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="40dp"
+    android:height="40dp"
+    android:viewportWidth="40"
+    android:viewportHeight="40">
+    <path
+        android:fillColor="#1A1A1A"
+        android:pathData="M2,2h36v36h-36z"/>
+    <path
+        android:strokeColor="#33FFFFFF"
+        android:strokeWidth="1"
+        android:pathData="M2,2h36v36h-36z"/>
+    <!-- Sleek mail envelope M -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M10,12h20c1.1,0 2,0.9 2,2v12c0,1.1 -0.9,2 -2,2H10c-1.1,0 -2,-0.9 -2,-2V14c0,-1.1 0.9,-2 2,-2zm10,7l8,-5H12l8,5zm0,2.3l-8,-5V26h16V16.3l-8,5z"/>
+</vector>

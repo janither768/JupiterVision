@@ -2,6 +2,7 @@ package com.jupiter.vision
 
 import android.Manifest
 import android.app.AlarmManager
+import android.app.Application
 import android.app.WallpaperManager
 import android.content.Context
 import android.content.pm.PackageManager
@@ -16,46 +17,39 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import com.jupiter.vision.engine.VisionEngine
-import com.jupiter.vision.model.VenueItem
-import com.jupiter.vision.model.VisionProfileRepository
-import com.jupiter.vision.model.WeekScheduleItem
-import com.jupiter.vision.ui.vision.*
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,10 +59,18 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -82,7 +84,12 @@ import com.jupiter.vision.ui.PanelSurface
 import com.jupiter.vision.ui.TileGrid
 import com.jupiter.vision.ui.TilePropertiesOverlay
 import com.jupiter.vision.ui.screens.AllAppsScreen
+import com.jupiter.vision.ui.screens.DoTProModuleScreen
 import com.jupiter.vision.ui.screens.SettingsScreen
+import com.jupiter.vision.ui.screens.VisionHomeScreen
+import com.jupiter.vision.ui.screens.VisionHomeViewModel
+import com.jupiter.vision.ui.screens.VisionHomeViewModelFactory
+import com.jupiter.vision.ui.theme.DarkGreyBackground
 import com.jupiter.vision.ui.theme.InterFontFamily
 import com.jupiter.vision.ui.theme.JupiterVisionTheme
 import com.jupiter.vision.util.AppHistoryManager
@@ -93,77 +100,134 @@ import com.jupiter.vision.util.JupiterNotificationListener
 import com.jupiter.vision.util.Packer
 import com.jupiter.vision.util.SystemControls
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.Random
 
+/**
+ * MainActivity for Jupitervision OS - 2112.17 Update.
+ *
+ * Implements strict industrial full screen launcher:
+ * - No chrome, no status bar, no navigation bar (immersive full screen).
+ * - Two horizontally scrollable pages: VisionHomeScreen (Page 0) <-> TileGrid (Page 1).
+ * - Screen area swiping navigates between pages; edge gestures trigger edge panels.
+ * - Backdrop in Band 3 matches the dimmed background in the tile grid.
+ */
 class MainActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
             enableEdgeToEdge()
+            WindowCompat.setDecorFitsSystemWindows(window, false)
         } catch (_: Throwable) {
             // Guard for legacy/custom ROMs
         }
-        ColorEnginePreferences.init(this)
+        hideSystemBars()
+        try {
+            ColorEnginePreferences.init(this)
+        } catch (_: Throwable) {}
+        try {
+            com.jupiter.vision.engine.service.VisionEngineService.start(this)
+        } catch (_: Throwable) {}
+
         setContent {
-            JupiterVisionTheme {
-                val navController = rememberNavController()
-                var gutterDp by remember { mutableIntStateOf(4) }
-                var flipCadenceSec by remember { mutableIntStateOf(4) }
-                var globalWallpaperTrigger by remember { mutableIntStateOf(0) }
-
-                val context = LocalContext.current
-                val onSetDeviceWallpaper = {
-                    val cosmic = createCosmicWallpaper(1080, 1920)
-                    val ok = SystemControls.setDeviceWallpaper(context, cosmic)
-                    if (ok) {
-                        globalWallpaperTrigger++
-                    }
-                }
-
-                NavHost(
-                    navController = navController,
-                    startDestination = "home"
+            com.jupiter.vision.ui.theme.VisionHomeTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = DarkGreyBackground
                 ) {
-                    composable("home") {
-                        HomeScreen(
-                            onNavigateToAllApps = { navController.navigate("all_apps") },
-                            onNavigateToSettings = { navController.navigate("settings") },
-                            gutterDp = gutterDp,
-                            flipIntervalSec = flipCadenceSec,
-                            wallpaperTrigger = globalWallpaperTrigger,
-                            onWallpaperTriggerChange = { globalWallpaperTrigger = it },
-                            onSetDeviceWallpaper = onSetDeviceWallpaper
-                        )
+                    val navController = rememberNavController()
+                    var gutterDp by remember { mutableIntStateOf(4) }
+                    var flipCadenceSec by remember { mutableIntStateOf(4) }
+                    var globalWallpaperTrigger by remember { mutableIntStateOf(0) }
+
+                    val context = LocalContext.current
+                    val onSetDeviceWallpaper = {
+                        val cosmic = createCosmicWallpaper(1080, 1920)
+                        val ok = SystemControls.setDeviceWallpaper(context, cosmic)
+                        if (ok) {
+                            globalWallpaperTrigger++
+                        }
                     }
 
-                    composable("all_apps") {
-                        AllAppsScreen(
-                            onBack = { navController.popBackStack() },
-                            onPinApp = {}
-                        )
-                    }
+                    NavHost(
+                        navController = navController,
+                        startDestination = "main_pager"
+                    ) {
+                        composable("main_pager") {
+                            MainLauncherPagerScreen(
+                                onNavigateToAllApps = { navController.navigate("all_apps") },
+                                onNavigateToSettings = { navController.navigate("settings") },
+                                gutterDp = gutterDp,
+                                flipIntervalSec = flipCadenceSec,
+                                wallpaperTrigger = globalWallpaperTrigger,
+                                onWallpaperTriggerChange = { globalWallpaperTrigger = it },
+                                onSetDeviceWallpaper = onSetDeviceWallpaper
+                            )
+                        }
 
-                    composable("settings") {
-                        SettingsScreen(
-                            currentGutter = gutterDp,
-                            onGutterChange = { gutterDp = it },
-                            currentFlipInterval = flipCadenceSec,
-                            onFlipIntervalChange = { flipCadenceSec = it },
-                            onBack = { navController.popBackStack() },
-                            onSetDeviceWallpaper = onSetDeviceWallpaper
-                        )
+                        composable("all_apps") {
+                            AllAppsScreen(
+                                onBack = { navController.popBackStack() },
+                                onPinApp = {}
+                            )
+                        }
+
+                        composable("settings") {
+                            SettingsScreen(
+                                currentGutter = gutterDp,
+                                onGutterChange = { gutterDp = it },
+                                currentFlipInterval = flipCadenceSec,
+                                onFlipIntervalChange = { flipCadenceSec = it },
+                                onBack = { navController.popBackStack() },
+                                onSetDeviceWallpaper = onSetDeviceWallpaper
+                            )
+                        }
                     }
                 }
             }
         }
     }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            hideSystemBars()
+        }
+    }
+
+    private fun hideSystemBars() {
+        try {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+            insetsController.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            insetsController.hide(WindowInsetsCompat.Type.systemBars())
+        } catch (_: Throwable) {
+            try {
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility = (
+                    android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                        or android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        or android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                )
+            } catch (_: Throwable) {}
+        }
+    }
 }
 
+/**
+ * MainLauncherPagerScreen: Manages the 2-page horizontal pager between
+ * Page 0: VisionHomeScreen
+ * Page 1: Single Canvas Tile Grid
+ *
+ * Edge gesture zones remain active on the screen edge without conflicting with page scrolling.
+ */
 @Composable
-private fun HomeScreen(
+private fun MainLauncherPagerScreen(
     onNavigateToAllApps: () -> Unit,
     onNavigateToSettings: () -> Unit,
     gutterDp: Int = 4,
@@ -173,6 +237,29 @@ private fun HomeScreen(
     onSetDeviceWallpaper: () -> Unit = {}
 ) {
     val ctx = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    val visionHomeViewModel: VisionHomeViewModel = viewModel(
+        factory = VisionHomeViewModelFactory(ctx.applicationContext as Application)
+    )
+
+    // Control live map state: active when on either page of launcher, turned off when in background
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                visionHomeViewModel.setLiveTrackingActive(true)
+            } else if (event == Lifecycle.Event.ON_PAUSE) {
+                visionHomeViewModel.setLiveTrackingActive(false)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        visionHomeViewModel.setLiveTrackingActive(true)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            visionHomeViewModel.setLiveTrackingActive(false)
+        }
+    }
 
     // Permissions check
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -183,6 +270,8 @@ private fun HomeScreen(
 
     LaunchedEffect(Unit) {
         val perms = buildList {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+            add(Manifest.permission.ACCESS_COARSE_LOCATION)
             if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
                 add(Manifest.permission.READ_EXTERNAL_STORAGE)
             }
@@ -232,7 +321,7 @@ private fun HomeScreen(
         }
     }
 
-    // System and Third-Party Zones State
+    // System and Third-Party Zones State for TileGrid
     val systemTiles = remember { mutableStateListOf<TileModel>() }
     val thirdPartyTiles = remember { mutableStateListOf<TileModel>() }
 
@@ -249,52 +338,6 @@ private fun HomeScreen(
         while (true) {
             timeString = timeFmt.format(Date())
             delay(500)
-        }
-    }
-
-    // Battery, Date, Weather Telemetry
-    val batteryPercent = remember {
-        val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
-        bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 85
-    }
-    val dateString = remember(timeString) {
-        SimpleDateFormat("EEEE, MMM d", Locale.getDefault()).format(Date()).uppercase()
-    }
-    val weatherTemp = "22°C"
-
-    // All installed apps loaded for Vision Engine
-    var allInstalledApps by remember { mutableStateOf<List<com.jupiter.vision.model.AppInfo>>(emptyList()) }
-    LaunchedEffect(Unit) {
-        allInstalledApps = AppLoader.loadInstalledApps(ctx)
-    }
-
-    // Vision Profile & Engine State
-    var isFirstRun by remember { mutableStateOf(VisionProfileRepository.isFirstRun(ctx)) }
-    var currentVisionScreen by remember {
-        mutableStateOf(if (isFirstRun) VisionScreen.FIRST_RUN_WELCOME else VisionScreen.NONE)
-    }
-    var showVisionMenu by remember { mutableStateOf(false) }
-    var showBirthdayModal by remember { mutableStateOf(false) }
-    var showCorrectionDialog by remember { mutableStateOf(false) }
-
-    var userName by remember { mutableStateOf(VisionProfileRepository.getName(ctx)) }
-    var userBirthday by remember { mutableStateOf(VisionProfileRepository.getBirthday(ctx)) }
-    val venuesList = remember { mutableStateListOf<VenueItem>().apply { addAll(VisionProfileRepository.getVenues(ctx)) } }
-    val weekCalendarMap = remember {
-        val map = mutableStateMapOf<String, WeekScheduleItem>()
-        map.putAll(VisionProfileRepository.getWeekCalendar(ctx))
-        map
-    }
-    var editingVenue by remember { mutableStateOf<VenueItem?>(null) }
-    var isNewVenue by remember { mutableStateOf(false) }
-
-    var engineSnapshot by remember {
-        mutableStateOf(VisionEngine.evaluateState(ctx, allInstalledApps))
-    }
-    LaunchedEffect(allInstalledApps, isFirstRun) {
-        while (true) {
-            engineSnapshot = VisionEngine.evaluateState(ctx, allInstalledApps)
-            delay(15000L)
         }
     }
 
@@ -415,10 +458,8 @@ private fun HomeScreen(
                 contentModes = all.associate { t ->
                     val isMusicTile = (t.role ?: t.id).lowercase().contains("mus")
                     if (isMusicTile && playbackState.isPlaying) {
-                        // Disable tile mode switching while music is playing
                         t.id to TileMode.CONTENT
                     } else if (t.isFolder) {
-                        // Folders stay in ICON mode until pressed by the user
                         t.id to TileMode.ICON
                     } else {
                         val hasLiveNotif = t.packageName != null && (realNotifications[t.packageName]?.isNotEmpty() == true)
@@ -447,195 +488,211 @@ private fun HomeScreen(
     // Edge Panels state
     var openPanel by remember { mutableStateOf(PanelKind.NONE) }
 
-    BackHandler(enabled = currentVisionScreen != VisionScreen.NONE || showVisionMenu || showBirthdayModal || showCorrectionDialog || openPanel != PanelKind.NONE || focusedTile != null || propertiesTile != null || swappingSourceTile != null || migratingFolderTile != null) {
-        if (showBirthdayModal) {
-            showBirthdayModal = false
-        } else if (showCorrectionDialog) {
-            showCorrectionDialog = false
-        } else if (showVisionMenu) {
-            showVisionMenu = false
-        } else if (currentVisionScreen == VisionScreen.VENUE_EDITOR) {
-            currentVisionScreen = VisionScreen.VENUES_LIST
-        } else if (currentVisionScreen == VisionScreen.VENUES_LIST || currentVisionScreen == VisionScreen.WEEK_CALENDAR) {
-            currentVisionScreen = VisionScreen.VISION_PROFILE
-        } else if (currentVisionScreen == VisionScreen.VISION_PROFILE || currentVisionScreen == VisionScreen.ENGINE_STATUS_DIAGNOSTIC) {
-            currentVisionScreen = if (isFirstRun) VisionScreen.FIRST_RUN_WELCOME else VisionScreen.NONE
-        } else if (migratingFolderTile != null) {
-            migratingFolderTile = null
-        } else if (swappingSourceTile != null) {
-            swappingSourceTile = null
-        } else if (focusedTile != null) {
-            focusedTile = null
-            focusedBounds = null
-        } else if (propertiesTile != null) {
-            propertiesTile = null
-            propertiesBounds = null
-        } else if (openPanel != PanelKind.NONE) {
-            openPanel = PanelKind.NONE
+    // Three-page Horizontal Pager State (Page 0 = DoTProModuleScreen, Page 1 = VisionHomeScreen, Page 2 = TileGrid)
+    val pagerState = rememberPagerState(pageCount = { 3 }, initialPage = 1)
+    val isAnyOverlayOpen = (openPanel != PanelKind.NONE || focusedTile != null || propertiesTile != null || swappingSourceTile != null || migratingFolderTile != null)
+
+    BackHandler(enabled = isAnyOverlayOpen || pagerState.currentPage != 1) {
+        when {
+            migratingFolderTile != null -> migratingFolderTile = null
+            swappingSourceTile != null -> swappingSourceTile = null
+            focusedTile != null -> {
+                focusedTile = null
+                focusedBounds = null
+            }
+            propertiesTile != null -> {
+                propertiesTile = null
+                propertiesBounds = null
+            }
+            openPanel != PanelKind.NONE -> openPanel = PanelKind.NONE
+            pagerState.currentPage != 1 -> {
+                coroutineScope.launch {
+                    pagerState.animateScrollToPage(1)
+                }
+            }
         }
     }
 
     Box(
-        Modifier
+        modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // Static Full-Bleed Backdrop
-        val backdropBmp = remember(rawWallpaper) { rawWallpaper?.asImageBitmap() }
-        backdropBmp?.let {
-            Image(
-                bitmap = it,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-                alpha = 0.22f,
-                filterQuality = FilterQuality.Low
-            )
-        }
-
-        // Main Container: Fixed Header + Single Canvas Grid
-        Column(
-            Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-        ) {
-            // Header: Wordmark or Pure White Swap Banner or Migration prompt on left + Right-aligned time with seconds
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = when {
-                        migratingFolderTile != null -> "touch the desire area to migrate folder"
-                        swappingSourceTile != null -> "SELECT DESIRED APP TO SWAP"
-                        else -> "JUPITERVISION 2112.16 II"
-                    },
-                    fontFamily = InterFontFamily,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = if (migratingFolderTile != null) 11.sp else 12.sp,
-                    letterSpacing = if (migratingFolderTile != null) 0.5.sp else 2.sp,
-                    color = Color.White
-                )
-                Text(
-                    text = timeString.ifEmpty { "12:00:00" },
-                    fontFamily = InterFontFamily,
-                    fontWeight = FontWeight.Normal,
-                    fontSize = 12.sp,
-                    letterSpacing = 0.5.sp,
-                    color = Color.White.copy(alpha = 0.90f)
-                )
-            }
-
-            // Single Canvas Node Grid
-            TileGrid(
-                systemTiles = systemTiles,
-                thirdPartyTiles = thirdPartyTiles,
-                contentModes = contentModes,
-                galleryImages = deviceImages,
-                wallpaperBitmap = rawWallpaper,
-                isFocusActive = (focusedTile != null || propertiesTile != null),
-                isSwapMode = (swappingSourceTile != null),
-                isMusicPlaying = playbackState.isPlaying,
-                currentMusicTrackTitle = playbackState.currentTrack?.title ?: "",
-                migratingFolderTile = migratingFolderTile,
-                onMigrateFolderConfirm = { targetCol, targetRow ->
-                    val folder = migratingFolderTile
-                    if (folder != null) {
-                        val updatedTiles = Packer.migrateFolder(
-                            tiles = thirdPartyTiles.toList(),
-                            folderId = folder.id,
-                            targetCol = targetCol,
-                            targetRow = targetRow
-                        )
-                        thirdPartyTiles.clear()
-                        thirdPartyTiles.addAll(updatedTiles)
-                    }
-                    migratingFolderTile = null
-                },
-                onCancelMigration = {
-                    migratingFolderTile = null
-                },
-                onMusicPrev = { JupiterAudioPlayer.playPrevious(ctx) },
-                onMusicPlayPause = { JupiterAudioPlayer.togglePlayPause(ctx) },
-                onMusicNext = { JupiterAudioPlayer.playNext(ctx) },
-                onTileClick = { clickedTile ->
-                    val src = swappingSourceTile
-                    if (src != null) {
-                        // Perform the App Swap between src and clickedTile
-                        if (src.id != clickedTile.id) {
-                            swapTileApps(
-                                source = src,
-                                target = clickedTile,
-                                systemTiles = systemTiles,
-                                thirdPartyTiles = thirdPartyTiles,
-                                palette = palette
+        // Three horizontally scrollable pages (Module Page <-> Vision Home <-> Tile Grid)
+        HorizontalPager(
+            state = pagerState,
+            userScrollEnabled = !isAnyOverlayOpen,
+            modifier = Modifier.fillMaxSize()
+        ) { pageIndex ->
+            when (pageIndex) {
+                0 -> {
+                    // PAGE 0: DoTPro Module Page (Left of Vision Home)
+                    DoTProModuleScreen(
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                1 -> {
+                    // PAGE 1: VisionHomeScreen (Center)
+                    VisionHomeScreen(
+                        viewModel = visionHomeViewModel,
+                        wallpaperBitmap = rawWallpaper,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                2 -> {
+                    // PAGE 2: Tile Grid Screen (Right of Vision Home)
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(Color.Black)
+                    ) {
+                        // Static Full-Bleed Backdrop
+                        val backdropBmp = remember(rawWallpaper) { rawWallpaper?.asImageBitmap() }
+                        backdropBmp?.let {
+                            Image(
+                                bitmap = it,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize(),
+                                alpha = 0.22f,
+                                filterQuality = FilterQuality.Low
                             )
                         }
-                        swappingSourceTile = null
-                    } else if (focusedTile != null) {
-                        focusedTile = null
-                        focusedBounds = null
-                    } else if (propertiesTile != null) {
-                        propertiesTile = null
-                        propertiesBounds = null
-                    } else if (clickedTile.isFolder) {
-                        val currentMode = contentModes[clickedTile.id] ?: TileMode.ICON
-                        val newMode = if (currentMode == TileMode.CONTENT) TileMode.ICON else TileMode.CONTENT
-                        contentModes = contentModes.toMutableMap().apply { put(clickedTile.id, newMode) }
-                    } else if (clickedTile.role == "flash" || clickedTile.id == "torch") {
-                        SystemControls.toggleTorch(ctx)
-                    } else if (clickedTile.role == "cam" || clickedTile.id == "sys_cam") {
-                        SystemControls.launchCamera(ctx, clickedTile.packageName)
-                    } else if (clickedTile.packageName != null) {
-                        AppHistoryManager.recordAppLaunch(ctx, clickedTile.packageName)
-                        SystemControls.launchPackage(ctx, clickedTile.packageName)
-                    } else {
-                        SystemControls.launchSystemAction(ctx, clickedTile.role ?: clickedTile.id)
+
+                        // Main Container: Fixed Header + Single Canvas Grid
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .statusBarsPadding()
+                                .navigationBarsPadding()
+                        ) {
+                            // Header: Wordmark or Swap/Migration prompt on left + Right-aligned time
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = when {
+                                        migratingFolderTile != null -> "touch the desire area to migrate folder"
+                                        swappingSourceTile != null -> "SELECT DESIRED APP TO SWAP"
+                                        else -> "JUPITERVISION 2112.18_DOTPRO"
+                                    },
+                                    fontFamily = InterFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = if (migratingFolderTile != null) 11.sp else 12.sp,
+                                    letterSpacing = if (migratingFolderTile != null) 0.5.sp else 2.sp,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = timeString.ifEmpty { "12:00:00" },
+                                    fontFamily = InterFontFamily,
+                                    fontWeight = FontWeight.Normal,
+                                    fontSize = 12.sp,
+                                    letterSpacing = 0.5.sp,
+                                    color = Color.White.copy(alpha = 0.90f)
+                                )
+                            }
+
+                            // Single Canvas Node Grid
+                            TileGrid(
+                                systemTiles = systemTiles,
+                                thirdPartyTiles = thirdPartyTiles,
+                                contentModes = contentModes,
+                                galleryImages = deviceImages,
+                                wallpaperBitmap = rawWallpaper,
+                                isFocusActive = (focusedTile != null || propertiesTile != null),
+                                isSwapMode = (swappingSourceTile != null),
+                                isMusicPlaying = playbackState.isPlaying,
+                                currentMusicTrackTitle = playbackState.currentTrack?.title ?: "",
+                                migratingFolderTile = migratingFolderTile,
+                                onMigrateFolderConfirm = { targetCol, targetRow ->
+                                    val folder = migratingFolderTile
+                                    if (folder != null) {
+                                        val updatedTiles = Packer.migrateFolder(
+                                            tiles = thirdPartyTiles.toList(),
+                                            folderId = folder.id,
+                                            targetCol = targetCol,
+                                            targetRow = targetRow
+                                        )
+                                        thirdPartyTiles.clear()
+                                        thirdPartyTiles.addAll(updatedTiles)
+                                    }
+                                    migratingFolderTile = null
+                                },
+                                onCancelMigration = {
+                                    migratingFolderTile = null
+                                },
+                                onMusicPrev = { JupiterAudioPlayer.playPrevious(ctx) },
+                                onMusicPlayPause = { JupiterAudioPlayer.togglePlayPause(ctx) },
+                                onMusicNext = { JupiterAudioPlayer.playNext(ctx) },
+                                onTileClick = { clickedTile ->
+                                    val src = swappingSourceTile
+                                    if (src != null) {
+                                        if (src.id != clickedTile.id) {
+                                            swapTileApps(
+                                                source = src,
+                                                target = clickedTile,
+                                                systemTiles = systemTiles,
+                                                thirdPartyTiles = thirdPartyTiles,
+                                                palette = palette
+                                            )
+                                        }
+                                        swappingSourceTile = null
+                                    } else if (focusedTile != null) {
+                                        focusedTile = null
+                                        focusedBounds = null
+                                    } else if (propertiesTile != null) {
+                                        propertiesTile = null
+                                        propertiesBounds = null
+                                    } else if (clickedTile.isFolder) {
+                                        val currentMode = contentModes[clickedTile.id] ?: TileMode.ICON
+                                        val newMode = if (currentMode == TileMode.CONTENT) TileMode.ICON else TileMode.CONTENT
+                                        contentModes = contentModes.toMutableMap().apply { put(clickedTile.id, newMode) }
+                                    } else if (clickedTile.role == "flash" || clickedTile.id == "torch") {
+                                        SystemControls.toggleTorch(ctx)
+                                    } else if (clickedTile.role == "cam" || clickedTile.id == "sys_cam") {
+                                        SystemControls.launchCamera(ctx, clickedTile.packageName)
+                                    } else if (clickedTile.packageName != null) {
+                                        AppHistoryManager.recordAppLaunch(ctx, clickedTile.packageName)
+                                        SystemControls.launchPackage(ctx, clickedTile.packageName)
+                                    } else {
+                                        SystemControls.launchSystemAction(ctx, clickedTile.role ?: clickedTile.id)
+                                    }
+                                },
+                                onOpenMiniApp = { tile, bounds ->
+                                    if (swappingSourceTile == null && migratingFolderTile == null && !tile.isMicro && !tile.isInvisible) {
+                                        focusedTile = tile
+                                        focusedBounds = bounds
+                                    }
+                                },
+                                onOpenProperties = { tile, bounds ->
+                                    if (swappingSourceTile == null && migratingFolderTile == null && !tile.isMicro && !tile.isInvisible) {
+                                        propertiesTile = tile
+                                        propertiesBounds = bounds
+                                    }
+                                },
+                                gutter = gutterDp.dp,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                            )
+                        }
                     }
-                },
-                onOpenMiniApp = { tile, bounds ->
-                    if (swappingSourceTile == null && migratingFolderTile == null && !tile.isMicro && !tile.isInvisible) {
-                        focusedTile = tile
-                        focusedBounds = bounds
-                    }
-                },
-                onOpenProperties = { tile, bounds ->
-                    if (swappingSourceTile == null && migratingFolderTile == null && !tile.isMicro && !tile.isInvisible) {
-                        propertiesTile = tile
-                        propertiesBounds = bounds
-                    }
-                },
-                engineSnapshot = engineSnapshot,
-                timeString = timeString,
-                dateString = dateString,
-                batteryPercent = batteryPercent,
-                weatherTemp = weatherTemp,
-                onVisionHomeAppClick = { app ->
-                    AppHistoryManager.recordAppLaunch(ctx, app.packageName)
-                    SystemControls.launchPackage(ctx, app.packageName)
-                },
-                onVisionHomeLongPress = {
-                    showVisionMenu = true
-                },
-                gutter = gutterDp.dp,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            )
+                }
+            }
         }
 
-        // Edge gesture zones
+        // Edge gesture zones — Always active at screen edge (Alignment.CenterEnd)
         EdgePanelZones(
             openPanel = openPanel,
             onPanelChange = { openPanel = it },
             modifier = Modifier.align(Alignment.CenterEnd)
         )
 
-        // Panel Overlay
+        // Panel Overlay (Control Center / App Lister)
         PanelSurface(
             panel = openPanel,
             onClose = { openPanel = PanelKind.NONE },
@@ -662,7 +719,7 @@ private fun HomeScreen(
             )
         }
 
-        // Tile Properties & Size Editor Overlay with 8 directional arrows and SWAP support
+        // Tile Properties & Size Editor Overlay
         if (propertiesTile != null && propertiesBounds != null) {
             val currentTile = propertiesTile!!
             TilePropertiesOverlay(
@@ -712,172 +769,6 @@ private fun HomeScreen(
                     propertiesTile = null
                     propertiesBounds = null
                 }
-            )
-        }
-
-        // Vision Screens (First Run, Profile, Venues, Calendar, Diagnostics)
-        if (currentVisionScreen != VisionScreen.NONE) {
-            AnimatedContent(
-                targetState = currentVisionScreen,
-                transitionSpec = {
-                    slideInHorizontally(
-                        initialOffsetX = { fullWidth -> fullWidth },
-                        animationSpec = tween(durationMillis = 300, easing = IndustrialBezier)
-                    ) togetherWith slideOutHorizontally(
-                        targetOffsetX = { fullWidth -> -fullWidth },
-                        animationSpec = tween(durationMillis = 300, easing = IndustrialBezier)
-                    )
-                },
-                label = "VisionScreenTransition"
-            ) { targetScreen ->
-                when (targetScreen) {
-                    VisionScreen.FIRST_RUN_WELCOME -> {
-                        VisionFirstRunWelcomeScreen(
-                            onBeginInterview = {
-                                currentVisionScreen = VisionScreen.VISION_PROFILE
-                            },
-                            onSilentLearning = {
-                                VisionProfileRepository.setFirstRunCompleted(ctx)
-                                isFirstRun = false
-                                currentVisionScreen = VisionScreen.NONE
-                                engineSnapshot = VisionEngine.evaluateState(ctx, allInstalledApps)
-                            }
-                        )
-                    }
-                    VisionScreen.VISION_PROFILE -> {
-                        VisionProfileMainScreen(
-                            userName = userName,
-                            onNameChange = {
-                                userName = it
-                                VisionProfileRepository.setName(ctx, it)
-                            },
-                            userBirthday = userBirthday,
-                            onOpenBirthday = { showBirthdayModal = true },
-                            onOpenVenues = { currentVisionScreen = VisionScreen.VENUES_LIST },
-                            onOpenWeekCalendar = { currentVisionScreen = VisionScreen.WEEK_CALENDAR },
-                            onSaveAndExit = {
-                                currentVisionScreen = VisionScreen.ENGINE_WORKING_SAVING
-                            }
-                        )
-                    }
-                    VisionScreen.VENUES_LIST -> {
-                        VenuesScreen(
-                            venues = venuesList,
-                            onAddVenue = {
-                                editingVenue = VenueItem(name = "", type = "OTHER")
-                                isNewVenue = true
-                                currentVisionScreen = VisionScreen.VENUE_EDITOR
-                            },
-                            onSelectVenue = {
-                                editingVenue = it
-                                isNewVenue = false
-                                currentVisionScreen = VisionScreen.VENUE_EDITOR
-                            },
-                            onBack = { currentVisionScreen = VisionScreen.VISION_PROFILE }
-                        )
-                    }
-                    VisionScreen.VENUE_EDITOR -> {
-                        editingVenue?.let { v ->
-                            VenueEditorScreen(
-                                venue = v,
-                                isNew = isNewVenue,
-                                onSave = { updated ->
-                                    if (isNewVenue) {
-                                        venuesList.add(updated)
-                                    } else {
-                                        val idx = venuesList.indexOfFirst { it.id == updated.id }
-                                        if (idx >= 0) venuesList[idx] = updated
-                                    }
-                                    VisionProfileRepository.saveVenues(ctx, venuesList)
-                                    currentVisionScreen = VisionScreen.VENUES_LIST
-                                },
-                                onDelete = { del ->
-                                    venuesList.removeAll { it.id == del.id }
-                                    VisionProfileRepository.saveVenues(ctx, venuesList)
-                                    currentVisionScreen = VisionScreen.VENUES_LIST
-                                },
-                                onCancel = { currentVisionScreen = VisionScreen.VENUES_LIST }
-                            )
-                        }
-                    }
-                    VisionScreen.WEEK_CALENDAR -> {
-                        WeekCalendarScreen(
-                            calendarMap = weekCalendarMap,
-                            onSaveSchedule = { day: String, item: WeekScheduleItem ->
-                                weekCalendarMap[day] = item
-                                VisionProfileRepository.saveWeekCalendar(ctx, weekCalendarMap)
-                            },
-                            onBack = { currentVisionScreen = VisionScreen.VISION_PROFILE }
-                        )
-                    }
-                    VisionScreen.ENGINE_WORKING_SAVING -> {
-                        VisionEngineWorkingTransitionScreen(
-                            onFinished = {
-                                VisionProfileRepository.setFirstRunCompleted(ctx)
-                                isFirstRun = false
-                                currentVisionScreen = VisionScreen.NONE
-                                engineSnapshot = VisionEngine.evaluateState(ctx, allInstalledApps)
-                            }
-                        )
-                    }
-                    VisionScreen.ENGINE_STATUS_DIAGNOSTIC -> {
-                        VisionEngineStatusScreen(
-                            snapshot = engineSnapshot,
-                            onClose = { currentVisionScreen = VisionScreen.NONE }
-                        )
-                    }
-                    VisionScreen.NONE -> {}
-                }
-            }
-        }
-
-        // Birthday Modal Popup
-        if (showBirthdayModal) {
-            BirthdayModalPopup(
-                currentBirthday = userBirthday,
-                onDismiss = { showBirthdayModal = false },
-                onSave = {
-                    userBirthday = it
-                    VisionProfileRepository.setBirthday(ctx, it)
-                    showBirthdayModal = false
-                }
-            )
-        }
-
-        // Long Press Vision Home Menu
-        if (showVisionMenu) {
-            VisionHomeLongPressMenu(
-                onOpenProfile = {
-                    showVisionMenu = false
-                    currentVisionScreen = VisionScreen.VISION_PROFILE
-                },
-                onOpenStatus = {
-                    showVisionMenu = false
-                    currentVisionScreen = VisionScreen.ENGINE_STATUS_DIAGNOSTIC
-                },
-                onOpenCorrection = {
-                    showVisionMenu = false
-                    showCorrectionDialog = true
-                },
-                onDisableForToday = {
-                    showVisionMenu = false
-                    VisionProfileRepository.disableEngineUntilMidnight(ctx)
-                    engineSnapshot = VisionEngine.evaluateState(ctx, allInstalledApps)
-                },
-                onDismiss = { showVisionMenu = false }
-            )
-        }
-
-        // Correction Dialog
-        if (showCorrectionDialog) {
-            VisionEngineCorrectionDialog(
-                currentState = engineSnapshot.state,
-                onCorrect = { correction ->
-                    VisionProfileRepository.recordCorrection(ctx, correction)
-                    showCorrectionDialog = false
-                    engineSnapshot = VisionEngine.evaluateState(ctx, allInstalledApps)
-                },
-                onDismiss = { showCorrectionDialog = false }
             )
         }
     }

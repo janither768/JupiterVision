@@ -273,7 +273,15 @@ object AppLoader {
         val myPackage = context.packageName
 
         resolveInfos
-            .filter { it.activityInfo != null && it.activityInfo.packageName != myPackage }
+            .filter {
+                val pkg = it.activityInfo?.packageName?.lowercase() ?: return@filter false
+                it.activityInfo != null &&
+                        it.activityInfo.packageName != myPackage &&
+                        pkg != "android" &&
+                        !pkg.startsWith("com.android.systemui") &&
+                        !pkg.contains("packageinstaller") &&
+                        !pkg.contains("permissioncontroller")
+            }
             .map { resolveInfo ->
                 val label = try {
                     resolveInfo.loadLabel(pm)?.toString() ?: resolveInfo.activityInfo.name

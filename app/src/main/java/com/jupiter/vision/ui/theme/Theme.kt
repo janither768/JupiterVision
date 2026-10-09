@@ -15,10 +15,12 @@ import com.jupiter.vision.R
 
 val Sharp = 0.dp // Strict industrial design; no rounding anywhere
 
-// Inter font family bundled in res/font/inter.ttf
+// Inter font family bundled locally in res/font/inter.ttf
 val InterFontFamily = FontFamily(
+    Font(R.font.inter, FontWeight.Light),
     Font(R.font.inter, FontWeight.Normal),
     Font(R.font.inter, FontWeight.Medium),
+    Font(R.font.inter, FontWeight.SemiBold),
     Font(R.font.inter, FontWeight.Bold),
 )
 
@@ -42,11 +44,18 @@ val JVTypography = Typography(
     labelSmall = TextStyle(fontFamily = InterFontFamily, fontWeight = FontWeight.Medium, fontSize = 10.sp, lineHeight = 14.sp),
 )
 
+// Industrial dark grey #1A1A1A / White palette
+val DarkGreyBackground = Color(0xFF1A1A1A)
+
 private val JVScheme = darkColorScheme(
-    background = Color(0xFF000000),
-    surface = Color(0xFF101012),
-    onBackground = Color(0xFFE8E8E8),
-    onSurface = Color(0xFFE8E8E8),
+    background = Color(0xFF1A1A1A),
+    surface = Color(0xFF1A1A1A),
+    onBackground = Color(0xFFFFFFFF),
+    onSurface = Color(0xFFFFFFFF),
+    primary = Color(0xFFFFFFFF),
+    onPrimary = Color(0xFF1A1A1A),
+    surfaceVariant = Color(0xFF242424),
+    onSurfaceVariant = Color(0xCCFFFFFF),
 )
 
 @Composable

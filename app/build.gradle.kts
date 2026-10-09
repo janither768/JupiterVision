@@ -13,11 +13,11 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.aistudio.jupitervision.kxmpz"
+    applicationId = "com.aistudio.jupitervision.tftjvx"
     minSdk = 24
     targetSdk = 36
-    versionCode = 211217
-    versionName = "2112.16_II"
+    versionCode = 211220
+    versionName = "2112.18_DoTPro"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -54,6 +54,9 @@ android {
   buildFeatures {
     compose = true
     buildConfig = true
+  }
+  androidResources {
+    noCompress.add("tflite")
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
   dependenciesInfo {
@@ -117,8 +120,11 @@ dependencies {
   implementation(libs.logging.interceptor)
   implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
-  // implementation(libs.play.services.location)
+  implementation(libs.play.services.location)
+  implementation(libs.androidx.work.runtime.ktx)
+  implementation(libs.hilt.android)
   implementation(libs.retrofit)
+  implementation(libs.tensorflow.lite)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
