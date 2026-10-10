@@ -47,6 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.jupiter.vision.dotpro.model.AmbientState
 import com.jupiter.vision.dotpro.model.DoTProEvent
 import com.jupiter.vision.dotpro.service.DotProService
 import com.jupiter.vision.dotpro.service.DotProServiceState
@@ -56,12 +57,15 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 7. DIAGNOSTIC UI SURFACE
- * - Start / stop service buttons.
- * - Live list of emitted events displaying displayLabel string ("Music, stable").
- * - Auto-scroll: auto-scrolls to newest entry as it arrives. Pauses on manual scroll up,
- *   resumes on reaching bottom.
- * - Live raw energy + current signal label readout + YAMNet status.
+ * 6. EXPANDED DIAGNOSTIC UI SURFACE — DoTPro Module
+ * - Prominent state banner (ACTIVE | AMBIENT | SILENT) at top.
+ * - Live reference level (dBFS) & normalization offset (dB).
+ * - Per-band lift (dB) for 5 bands (<120Hz, 120-500, 500-2k, 2k-6k, >6k) as small bars.
+ * - SNR (dB), silent gate state (OPEN / CLOSED).
+ * - Battery tier (0..4), thermal status, audio source (UNPROCESSED/VOICE_RECOGNITION/MIC).
+ * - YAMNet delegate (XNNPACK / NNAPI) and current cadence.
+ * - Side-by-side comparison of raw RMS and refined RMS demonstrating scale normalization.
+ * - Auto-scrolling live event list with displayLabel formatting.
  */
 @Composable
 fun DotProDebugScreen(
@@ -114,7 +118,6 @@ fun DotProDebugScreen(
         }
     }
 
-    // Track scroll interactions: pause when scrolled up, resume when at bottom
     LaunchedEffect(isScrollInProgress, isAtBottom) {
         if (isScrollInProgress) {
             autoScrollEnabled = isAtBottom
@@ -123,7 +126,6 @@ fun DotProDebugScreen(
         }
     }
 
-    // Auto-scroll to newest event when active
     LaunchedEffect(events.size) {
         if (events.isNotEmpty() && autoScrollEnabled) {
             listState.animateScrollToItem(events.size - 1)
@@ -133,26 +135,65 @@ fun DotProDebugScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF121214))
-            .padding(16.dp)
+            .background(Color(0xFF101014))
+            .padding(14.dp)
             .testTag("dotpro_debug_screen")
     ) {
-        // Header
-        Text(
-            text = "DoTPro Module Diagnostic",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = Color.White
-        )
-        Text(
-            text = "YAMNet Reflex Pipeline (Gated & Temporally Smoothed)",
-            style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFFAAAAAA)
-        )
+        // --- 1. PROMINENT TOP STATE BANNER ---
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = when (ambientState) {
+                    AmbientState.ACTIVE -> Color(0xFF1B5E20)
+                    AmbientState.AMBIENT -> Color(0xFF006064)
+                    AmbientState.SILENT -> Color(0xFF263238)
+                }
+            ),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "STATE: ${ambientState.name}",
+                        fontWeight = FontWeight.Black,
+                        fontSize = 18.sp,
+                        color = Color.White
+                    )
+                    Text(
+                        text = when (ambientState) {
+                            AmbientState.ACTIVE -> "Active Acoustic Presence Track Firing"
+                            AmbientState.AMBIENT -> "Stable Ambient Room Tone (Reflex Normalizer Engaged)"
+                            AmbientState.SILENT -> "Silence Declared (SNR <= 3dB, Per-band EQ Disabled)"
+                        },
+                        fontSize = 10.5.sp,
+                        color = Color(0xFFE0E0E0)
+                    )
+                }
 
-        Spacer(modifier = Modifier.height(10.dp))
+                val tel = refinementTelemetry
+                val gateClosed = tel?.isSilentGateClosed ?: (ambientState == AmbientState.SILENT)
+                Text(
+                    text = if (gateClosed) "GATE: CLOSED" else "GATE: OPEN",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (gateClosed) Color(0xFFFF8A80) else Color(0xFF69F0AE),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(if (gateClosed) Color(0x33FF5252) else Color(0x3300E676))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        }
 
-        // Control Row
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // --- 2. SERVICE CONTROL ROW ---
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -170,7 +211,7 @@ fun DotProDebugScreen(
                 enabled = serviceState != DotProServiceState.ACTIVE,
                 modifier = Modifier.weight(1f).testTag("dotpro_start_btn")
             ) {
-                Text("Start Service")
+                Text("Start Service", fontSize = 12.sp)
             }
 
             Button(
@@ -181,119 +222,209 @@ fun DotProDebugScreen(
                 enabled = serviceState == DotProServiceState.ACTIVE || serviceState == DotProServiceState.DEGRADED,
                 modifier = Modifier.weight(1f).testTag("dotpro_stop_btn")
             ) {
-                Text("Stop Service")
+                Text("Stop Service", fontSize = 12.sp)
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
-        // Diagnostic Status Card
+        // --- 3. DIAGNOSTIC TELEMETRY CARD ---
+        val tel = refinementTelemetry
+        val rawRmsVal = tel?.rawRms ?: 0f
+        val refinedRmsVal = tel?.refinedRms ?: (features?.frameRms ?: 0f)
+        val snrDb = tel?.snrDb ?: 0f
+        val refLoudnessDb = tel?.referenceLoudnessDb ?: -45f
+        val normOffsetDb = tel?.normalizationOffsetDb ?: 0f
+        val batteryTier = tel?.batteryTier ?: 0
+        val thermalStatus = tel?.thermalStatus ?: "NONE"
+        val yamNetDelegate = tel?.yamNetDelegate ?: "XNNPACK"
+        val cadenceDesc = tel?.cadenceDescription ?: "7s (ambient)"
+        val sourceWarning = tel?.audioSourceWarning
+
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1B1B22))
         ) {
-            Column(modifier = Modifier.padding(12.dp)) {
+            Column(modifier = Modifier.padding(10.dp)) {
+                // Tier & Route Pills
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "STATUS: $serviceState",
-                        fontWeight = FontWeight.SemiBold,
-                        color = when (serviceState) {
-                            DotProServiceState.ACTIVE -> Color(0xFF66BB6A)
-                            DotProServiceState.DEGRADED -> Color(0xFFFFA726)
-                            DotProServiceState.SUSPENDED -> Color(0xFF42A5F5)
-                            else -> Color(0xFFEF5350)
-                        },
-                        fontSize = 13.sp
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Ambient State Pill
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = ambientState.name,
-                            fontSize = 11.sp,
+                            text = "TIER $batteryTier",
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            color = when (ambientState) {
-                                com.jupiter.vision.dotpro.model.AmbientState.ACTIVE -> Color(0xFF00E676)
-                                com.jupiter.vision.dotpro.model.AmbientState.AMBIENT -> Color(0xFF00E5FF)
-                                com.jupiter.vision.dotpro.model.AmbientState.SILENT -> Color(0xFFB0BEC5)
+                            color = when (batteryTier) {
+                                0 -> Color(0xFF81C784)
+                                1 -> Color(0xFFFFD54F)
+                                2 -> Color(0xFFFFB74D)
+                                else -> Color(0xFFFF7043)
                             },
                             modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(
-                                    when (ambientState) {
-                                        com.jupiter.vision.dotpro.model.AmbientState.ACTIVE -> Color(0x3300E676)
-                                        com.jupiter.vision.dotpro.model.AmbientState.AMBIENT -> Color(0x3300E5FF)
-                                        com.jupiter.vision.dotpro.model.AmbientState.SILENT -> Color(0x33B0BEC5)
-                                    }
-                                )
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(Color(0xFF2A2A35))
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
                         )
-                        // Audio Source Pill
+                        Text(
+                            text = "THERMAL: $thermalStatus",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFB0BEC5),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(Color(0xFF2A2A35))
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             text = activeAudioSource,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFFFFD54F),
                             modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
+                                .clip(RoundedCornerShape(3.dp))
                                 .background(Color(0x33FFD54F))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                        Text(
+                            text = yamNetDelegate,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFCE93D8),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(Color(0x33CE93D8))
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                if (sourceWarning != null) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = sourceWarning,
+                        fontSize = 9.5.sp,
+                        color = Color(0xFFFFAB91),
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Normalization & Reference Level
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "REF: ${String.format(Locale.US, "%.1f", refLoudnessDb)} dBFS",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.5.sp,
+                        color = Color(0xFF80D8FF)
+                    )
+                    Text(
+                        text = "OFFSET: ${if (normOffsetDb >= 0) "+" else ""}${String.format(Locale.US, "%.1f", normOffsetDb)} dB",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (normOffsetDb > 0) Color(0xFF69F0AE) else Color(0xFFFFD54F)
+                    )
+                    Text(
+                        text = "SNR: ${String.format(Locale.US, "%.1f", snrDb)} dB",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.5.sp,
+                        color = if (snrDb > 3f) Color(0xFF80CBC4) else Color(0xFFFF8A80)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Live Side-by-Side RMS Sparklines (Raw vs Refined Normalization Visual)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "RAW RMS: ${String.format(Locale.US, "%.4f", rawRmsVal)}",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 9.5.sp,
+                            color = Color.Gray
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        LinearProgressIndicator(
+                            progress = { (rawRmsVal * 8f).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().height(4.dp),
+                            color = Color(0xFF78909C),
+                            trackColor = Color(0xFF26262E)
+                        )
+                    }
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "NORMALIZED: ${String.format(Locale.US, "%.4f", refinedRmsVal)}",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 9.5.sp,
+                            color = Color(0xFF00E5FF)
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        LinearProgressIndicator(
+                            progress = { (refinedRmsVal * 8f).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().height(4.dp),
+                            color = Color(0xFF00E5FF),
+                            trackColor = Color(0xFF26262E)
                         )
                     }
                 }
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // Refinement Pipeline Telemetry Row
-                val tel = refinementTelemetry
-                val snrDb = tel?.snrDb ?: 0f
-                val makeupDb = tel?.makeupGainDb ?: 0f
-                val floorRms = tel?.hardwareFloorRms ?: 0.003f
-                val compRedDb = tel?.maxCompressorReductionDb ?: 0f
-                val refinedRmsVal = tel?.refinedRms ?: (features?.frameRms ?: 0f)
-                val rawRmsVal = tel?.rawRms ?: (features?.frameRms ?: 0f)
-
+                // Per-Band Lift (5 Bands EQ Tilt)
+                val bandLifts = tel?.bandLiftsDb ?: FloatArray(5)
+                val bandNames = listOf("<120", "120-500", "500-2k", "2k-6k", ">6k")
                 Text(
-                    text = "REFINEMENT: 48kHz->16kHz | SNR: ${String.format(Locale.US, "%.1f", snrDb)} dB | LIFT: +${String.format(Locale.US, "%.1f", makeupDb)} dB | COMP: -${String.format(Locale.US, "%.1f", compRedDb)} dB | FLOOR: ${String.format(Locale.US, "%.4f", floorRms)}",
-                    fontSize = 10.sp,
+                    text = "5-BAND EQ TILT (CAPPED +12dB):",
+                    fontSize = 9.5.sp,
                     fontFamily = FontFamily.Monospace,
-                    color = Color(0xFF80CBC4)
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFFB0BEC5)
                 )
+                Spacer(modifier = Modifier.height(2.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    for (b in 0 until 5) {
+                        val lift = bandLifts.getOrElse(b) { 0f }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "${bandNames[b]}: +${String.format(Locale.US, "%.0f", lift)}",
+                                fontSize = 8.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = Color.LightGray
+                            )
+                            LinearProgressIndicator(
+                                progress = { (lift / 12f).coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth().height(3.dp),
+                                color = Color(0xFFCE93D8),
+                                trackColor = Color(0xFF26262E)
+                            )
+                        }
+                    }
+                }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
-                // Raw Energy Readout
-                val rawEnergy = refinedRmsVal
-                val baseline = features?.baselineRms ?: 0f
-                val changeMag = features?.changeMagnitude ?: 0f
-                val velocity = features?.envelopeVelocity ?: 0f
-                val motion = features?.motion?.name ?: "UNKNOWN"
-                val isTransient = features?.isTransient ?: false
-
-                Text(
-                    text = "REFINED RMS: ${String.format(Locale.US, "%.3f", rawEnergy)} (RAW: ${String.format(Locale.US, "%.3f", rawRmsVal)}) | BASELINE: ${String.format(Locale.US, "%.3f", baseline)} | DELTA: ${String.format(Locale.US, "%.3f", changeMag)}",
-                    fontSize = 10.5.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = Color.LightGray
-                )
-
-                Spacer(modifier = Modifier.height(4.dp))
-                LinearProgressIndicator(
-                    progress = { (rawEnergy * 8f).coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth().height(6.dp),
-                    color = if (isTransient) Color(0xFFFF5252) else if (ambientState == com.jupiter.vision.dotpro.model.AmbientState.AMBIENT) Color(0xFF00E5FF) else Color(0xFF00E676),
-                    trackColor = Color(0xFF333333)
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Display Label & Current Signal Readout
+                // Display Label & Taxonomy Readout
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -302,58 +433,48 @@ fun DotProDebugScreen(
                     Column {
                         Text(
                             text = "DISPLAY: $currentDisplayLabel",
-                            fontSize = 14.sp,
+                            fontSize = 13.5.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF80D8FF)
                         )
                         Text(
                             text = "TAXONOMY: $currentSignal (${(signalConfidence * 100).toInt()}%)",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
+                            fontSize = 11.5.sp,
                             color = Color(0xFFB0BEC5)
                         )
                     }
-
                     Text(
-                        text = "MOTION: $motion",
-                        fontSize = 11.sp,
-                        color = Color(0xFFB0BEC5)
+                        text = "CADENCE: $cadenceDesc",
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Color(0xFFFFD54F)
                     )
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
-
-                // Gating and Model Engine Readout
+                Spacer(modifier = Modifier.height(2.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
                         text = "YAMNET: $yamNetStatus",
-                        fontSize = 10.5.sp,
+                        fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
                         color = if (yamNetStatus.startsWith("ACTIVE")) Color(0xFF69F0AE) else Color(0xFFFFD54F)
                     )
                     Text(
                         text = "TOP-1: $rawYamNetClass",
-                        fontSize = 10.5.sp,
+                        fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
                         color = Color(0xFFCE93D8)
                     )
                 }
-
-                Text(
-                    text = "TRANSIENT: $isTransient | VEL: ${String.format(Locale.US, "%.4f", velocity)} | CENTROID: ${(features?.spectralCentroid ?: 0f).toInt()}Hz",
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = Color(0xFF9E9E9E)
-                )
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
-        // Live Emitted Events Header & Auto-scroll indicator
+        // --- 4. LIVE EMITTED EVENTS HEADER ---
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -363,18 +484,18 @@ fun DotProDebugScreen(
                 Text(
                     text = "Live Emitted Events (${events.size})",
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
+                    fontSize = 12.5.sp,
                     color = Color.White
                 )
                 if (!autoScrollEnabled && events.isNotEmpty()) {
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "PAUSED (Tap to bottom)",
-                        fontSize = 10.sp,
+                        text = "PAUSED (Tap to resume)",
+                        fontSize = 9.5.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFFFFB74D),
                         modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
+                            .clip(RoundedCornerShape(3.dp))
                             .background(Color(0xFF3E2723))
                             .clickable {
                                 autoScrollEnabled = true
@@ -382,27 +503,27 @@ fun DotProDebugScreen(
                                     listState.animateScrollToItem(events.size - 1)
                                 }
                             }
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
                     )
                 }
             }
 
             Text(
                 text = if (autoScrollEnabled) "Auto-scroll: ON" else "Auto-scroll: PAUSED",
-                fontSize = 11.sp,
+                fontSize = 10.5.sp,
                 color = if (autoScrollEnabled) Color(0xFF81C784) else Color(0xFFFFB74D)
             )
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
-        // Live Event List
+        // --- 5. LIVE EVENT LIST ---
         if (events.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .background(Color(0xFF18181C)),
+                    .background(Color(0xFF16161C)),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -411,7 +532,7 @@ fun DotProDebugScreen(
                     else
                         "Service stopped. Press 'Start Service' to run pipeline.",
                     color = Color(0xFF666666),
-                    fontSize = 12.sp
+                    fontSize = 11.5.sp
                 )
             }
         } else {
@@ -420,7 +541,7 @@ fun DotProDebugScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 items(events, key = { it.timestampMs.toString() + it.signal.name + it.presence.name + it.displayLabel }) { event ->
                     EventItemCard(event)
@@ -435,7 +556,6 @@ private fun EventItemCard(event: DoTProEvent) {
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()) }
     val formattedTime = remember(event.timestampMs) { timeFormat.format(Date(event.timestampMs)) }
 
-    // Use displayLabel formatted string ("<Class>, <state>") if present, fallback to titlecase
     val displayTitle = remember(event.displayLabel, event.signal) {
         if (event.displayLabel.isNotBlank()) {
             event.displayLabel
@@ -446,59 +566,63 @@ private fun EventItemCard(event: DoTProEvent) {
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A22))
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF191922))
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
+        Column(modifier = Modifier.padding(7.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = displayTitle,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.5.sp,
+                        fontSize = 13.sp,
                         color = Color(0xFF80D8FF)
                     )
                     Text(
                         text = "[${event.state.name}]",
-                        fontSize = 10.sp,
+                        fontSize = 9.5.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (event.state == com.jupiter.vision.dotpro.model.AmbientState.AMBIENT) Color(0xFF00E5FF) else Color(0xFF00E676)
+                        color = when (event.state) {
+                            AmbientState.ACTIVE -> Color(0xFF00E676)
+                            AmbientState.AMBIENT -> Color(0xFF00E5FF)
+                            AmbientState.SILENT -> Color(0xFFB0BEC5)
+                        }
                     )
                     Text(
-                        text = "[${event.signal.name}]",
-                        fontSize = 10.sp,
+                        text = if (event.normalized) "[NORM]" else "[RAW]",
+                        fontSize = 9.sp,
                         fontFamily = FontFamily.Monospace,
-                        color = Color(0xFF90A4AE)
+                        color = if (event.normalized) Color(0xFF69F0AE) else Color(0xFFFFAB91)
                     )
                 }
                 Text(
                     text = formattedTime,
-                    fontSize = 10.sp,
+                    fontSize = 9.5.sp,
                     fontFamily = FontFamily.Monospace,
                     color = Color(0xFF888888)
                 )
             }
 
-            Spacer(modifier = Modifier.height(3.dp))
+            Spacer(modifier = Modifier.height(2.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
                     text = "SRC: ${event.source.name}",
-                    fontSize = 11.sp,
+                    fontSize = 10.5.sp,
                     color = Color(0xFFE0E0E0)
                 )
                 Text(
                     text = "PRESENCE: ${event.presence.name}",
-                    fontSize = 11.sp,
+                    fontSize = 10.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = when (event.presence.name) {
                         "ENTER" -> Color(0xFF81C784)
@@ -508,26 +632,13 @@ private fun EventItemCard(event: DoTProEvent) {
                 )
                 Text(
                     text = "PROX: ${event.proximity.name}",
-                    fontSize = 11.sp,
+                    fontSize = 10.5.sp,
                     color = Color(0xFFFFB74D)
                 )
-            }
-
-            Spacer(modifier = Modifier.height(2.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
                 Text(
-                    text = "MOTION: ${event.motion.name}",
+                    text = "TIER: ${event.batteryTier}",
                     fontSize = 10.sp,
-                    color = Color(0xFFB0BEC5)
-                )
-                Text(
-                    text = "BEARING: ${event.bearing.name}",
-                    fontSize = 10.sp,
-                    color = Color(0xFFB0BEC5)
+                    color = Color(0xFF90A4AE)
                 )
                 Text(
                     text = "CONF: ${(event.confidence * 100).toInt()}%",
@@ -535,16 +646,7 @@ private fun EventItemCard(event: DoTProEvent) {
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF4DD0E1)
                 )
-                if (event.change) {
-                    Text(
-                        text = "[CHANGE]",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFFF8A80)
-                    )
-                }
             }
         }
     }
 }
-

@@ -37,7 +37,9 @@ class DotProEventEmitter {
         tracks: List<PresenceTrack>,
         source: Source,
         currentTimestampMs: Long,
-        ambientState: com.jupiter.vision.dotpro.model.AmbientState = com.jupiter.vision.dotpro.model.AmbientState.ACTIVE
+        ambientState: com.jupiter.vision.dotpro.model.AmbientState = com.jupiter.vision.dotpro.model.AmbientState.ACTIVE,
+        normalized: Boolean = true,
+        batteryTier: Int = 0
     ): List<DoTProEvent> {
         val emittedList = mutableListOf<DoTProEvent>()
 
@@ -63,7 +65,9 @@ class DotProEventEmitter {
                         confidence = track.overallConfidence,
                         timestampMs = currentTimestampMs,
                         displayLabel = track.displayLabel,
-                        state = ambientState
+                        state = ambientState,
+                        normalized = normalized,
+                        batteryTier = batteryTier
                     )
 
                     lastEmitTimestampMs = currentTimestampMs

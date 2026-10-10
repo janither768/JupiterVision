@@ -1,17 +1,21 @@
 package com.jupiter.vision
 
+import com.jupiter.vision.dotpro.audio.RefinementPipeline
 import com.jupiter.vision.dotpro.classifier.DisplayLabelFormatter
 import com.jupiter.vision.dotpro.classifier.GateTriggerReason
 import com.jupiter.vision.dotpro.classifier.LabelStabilizer
 import com.jupiter.vision.dotpro.classifier.YamNetGate
 import com.jupiter.vision.dotpro.classifier.YamNetToTaxonomy
 import com.jupiter.vision.dotpro.features.FrameFeatures
+import com.jupiter.vision.dotpro.model.AmbientState
 import com.jupiter.vision.dotpro.model.Motion
 import com.jupiter.vision.dotpro.model.Signal
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.PI
+import kotlin.math.sin
 
 class YamNetPipelineUnitTest {
 
@@ -129,11 +133,11 @@ class YamNetPipelineUnitTest {
 
     @Test
     fun testRefinementPipelineProcessingAndDownsampling() {
-        val pipeline = com.jupiter.vision.dotpro.audio.RefinementPipeline()
+        val pipeline = RefinementPipeline()
 
         // 2400 samples (50ms @ 48kHz) with DC offset and 100 Hz tone
         val raw48k = FloatArray(2400) { i ->
-            0.15f + 0.05f * kotlin.math.sin(2.0 * kotlin.math.PI * 100.0 * i / 48000.0).toFloat()
+            0.15f + 0.05f * sin(2.0 * PI * 100.0 * i / 48000.0).toFloat()
         }
 
         val output = pipeline.process(raw48k)
@@ -147,6 +151,46 @@ class YamNetPipelineUnitTest {
         assertTrue(output.estimatedSnrDb > -100f)
         for (s in output.refined48kSamples) {
             assertTrue(s <= 1.0f && s >= -1.0f)
+        }
+    }
+
+    @Test
+    fun testScaleNormalizationAndClamping() {
+        val pipeline = RefinementPipeline()
+
+        // Feed quiet room audio (amplitude ~ 0.005)
+        val quietAudio = FloatArray(2400) { i ->
+            0.005f * sin(2.0 * PI * 440.0 * i / 48000.0).toFloat()
+        }
+
+        var lastOutput = pipeline.process(quietAudio)
+        for (i in 0 until 50) {
+            lastOutput = pipeline.process(quietAudio)
+        }
+
+        // Offset must be positive lift and clamped within [-6 dB, +40 dB]
+        assertTrue(lastOutput.normalizationOffsetDb >= -6.0f)
+        assertTrue(lastOutput.normalizationOffsetDb <= 40.0f)
+        assertTrue(lastOutput.referenceLoudnessDb < 0f)
+    }
+
+    @Test
+    fun testSnrGateSilentStateProtection() {
+        val pipeline = RefinementPipeline()
+
+        // Feed near-zero noise audio
+        val silenceAudio = FloatArray(2400) { 0.0001f }
+
+        var output = pipeline.process(silenceAudio)
+        for (i in 0 until 50) {
+            output = pipeline.process(silenceAudio)
+        }
+
+        // Silent gate must close on sustained low SNR
+        assertTrue(output.isSilentGateClosed)
+        // In silent gate, band lifts must be disabled (0 dB)
+        for (lift in output.bandLiftsDb) {
+            assertEquals(0f, lift, 0.01f)
         }
     }
 
@@ -172,22 +216,46 @@ class YamNetPipelineUnitTest {
 
         // Feed quiet frames below floor until SILENT state locks in
         var time = 1000L
-        for (i in 0 until 30) {
+        for (i in 0 until 40) {
             time += 50L
-            gate.evaluate(quietFeatures, refinedRms = 0.002f, hardwareFloorRms = 0.003f, hasActivePresenceTrack = false, currentTimestampMs = time)
+            gate.evaluate(
+                features = quietFeatures,
+                refinedRms = 0.002f,
+                hardwareFloorRms = 0.003f,
+                hasActivePresenceTrack = false,
+                currentTimestampMs = time,
+                snrDb = 1.0f,
+                isSilentGateClosed = true
+            )
         }
-        assertEquals(com.jupiter.vision.dotpro.model.AmbientState.SILENT, gate.currentState)
+        assertEquals(AmbientState.SILENT, gate.currentState)
 
-        // When ambient room tone appears (> floor)
-        for (i in 0 until 12) {
+        // When ambient room tone appears (> floor, SNR > 3dB)
+        for (i in 0 until 15) {
             time += 50L
-            gate.evaluate(quietFeatures, refinedRms = 0.015f, hardwareFloorRms = 0.003f, hasActivePresenceTrack = false, currentTimestampMs = time)
+            gate.evaluate(
+                features = quietFeatures,
+                refinedRms = 0.015f,
+                hardwareFloorRms = 0.003f,
+                hasActivePresenceTrack = false,
+                currentTimestampMs = time,
+                snrDb = 15.0f,
+                isSilentGateClosed = false
+            )
         }
-        assertEquals(com.jupiter.vision.dotpro.model.AmbientState.AMBIENT, gate.currentState)
+        assertEquals(AmbientState.AMBIENT, gate.currentState)
 
         // When active presence track begins
         time += 50L
-        gate.evaluate(quietFeatures, refinedRms = 0.030f, hardwareFloorRms = 0.003f, hasActivePresenceTrack = true, currentTimestampMs = time)
-        assertEquals(com.jupiter.vision.dotpro.model.AmbientState.ACTIVE, gate.currentState)
+        gate.evaluate(
+            features = quietFeatures,
+            refinedRms = 0.030f,
+            hardwareFloorRms = 0.003f,
+            hasActivePresenceTrack = true,
+            currentTimestampMs = time,
+            snrDb = 20.0f,
+            isSilentGateClosed = false
+        )
+        assertEquals(AmbientState.ACTIVE, gate.currentState)
     }
 }

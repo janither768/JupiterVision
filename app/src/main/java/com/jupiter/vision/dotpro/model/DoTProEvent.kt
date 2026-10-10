@@ -17,8 +17,12 @@ data class DoTProEvent(
     val confidence: Float,
     val timestampMs: Long,
     val displayLabel: String = "",
-    val state: AmbientState = AmbientState.ACTIVE
+    val state: AmbientState = AmbientState.ACTIVE,
+    val normalized: Boolean = true,
+    val batteryTier: Int = 0
 )
+
+typealias State = AmbientState
 
 /**
  * Three-state ambient model:

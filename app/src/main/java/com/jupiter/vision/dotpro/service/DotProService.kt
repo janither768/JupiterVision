@@ -15,6 +15,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.jupiter.vision.MainActivity
 import com.jupiter.vision.R
+import com.jupiter.vision.dotpro.BatteryThermalManager
 import com.jupiter.vision.dotpro.audio.AudioCapture
 import com.jupiter.vision.dotpro.audio.RefinementPipeline
 import com.jupiter.vision.dotpro.classifier.DisplayLabelFormatter
@@ -56,26 +57,36 @@ enum class DotProServiceState {
 }
 
 /**
- * Telemetry snapshot for the refinement pipeline and 3-state engine.
+ * Telemetry snapshot for the refinement pipeline, scale normalizer, and 3-state engine.
  */
 data class RefinementTelemetry(
     val rawRms: Float,
     val refinedRms: Float,
     val snrDb: Float,
     val makeupGainDb: Float,
+    val referenceLoudnessDb: Float,
+    val normalizationOffsetDb: Float,
+    val bandLiftsDb: FloatArray,
     val hardwareFloorRms: Float,
     val maxCompressorReductionDb: Float,
+    val bandCompressorReductionsDb: FloatArray,
+    val isSilentGateClosed: Boolean,
+    val batteryTier: Int,
+    val thermalStatus: String,
     val ambientState: AmbientState,
     val cadenceDescription: String,
-    val audioSourceName: String
+    val audioSourceName: String,
+    val yamNetDelegate: String,
+    val audioSourceWarning: String?
 )
 
 /**
  * DotProService:
  * 1. Persistent, low-importance notification identifying DoTPro as active.
  * 2. Owns the module lifecycle: start, stop, degrade, suspend.
- * 3. Integrates the 48 kHz RefinementPipeline, YAMNet classification,
- *    Three-State Ambient Model (ACTIVE, AMBIENT, SILENT), and DoTPro Event Emitter.
+ * 3. Integrates the 48 kHz RefinementPipeline (SCALE + SHAPE), YAMNet classification,
+ *    Three-State Ambient Model (ACTIVE, AMBIENT, SILENT), battery/thermal tiering,
+ *    and DoTPro Event Emitter.
  */
 class DotProService : Service() {
 
@@ -101,6 +112,15 @@ class DotProService : Service() {
 
         private val _activeAudioSourceFlow = MutableStateFlow("UNKNOWN")
         val activeAudioSourceFlow: StateFlow<String> = _activeAudioSourceFlow.asStateFlow()
+
+        private val _audioSourceWarningFlow = MutableStateFlow<String?>(null)
+        val audioSourceWarningFlow: StateFlow<String?> = _audioSourceWarningFlow.asStateFlow()
+
+        private val _batteryTierFlow = MutableStateFlow(0)
+        val batteryTierFlow: StateFlow<Int> = _batteryTierFlow.asStateFlow()
+
+        private val _thermalStatusFlow = MutableStateFlow("NONE")
+        val thermalStatusFlow: StateFlow<String> = _thermalStatusFlow.asStateFlow()
 
         private val _currentFeaturesFlow = MutableStateFlow<FrameFeatures?>(null)
         val currentFeaturesFlow: StateFlow<FrameFeatures?> = _currentFeaturesFlow.asStateFlow()
@@ -154,6 +174,7 @@ class DotProService : Service() {
     private val displayLabelFormatter = DisplayLabelFormatter()
     private val presenceTracker = PresenceTracker()
     private val eventEmitter = DotProEventEmitter()
+    private lateinit var batteryThermalManager: BatteryThermalManager
 
     val events: SharedFlow<DoTProEvent> get() = eventEmitter.events
 
@@ -168,9 +189,28 @@ class DotProService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        batteryThermalManager = BatteryThermalManager(this)
         audioCapture = AudioCapture(this, serviceScope)
         yamNetClassifier = YamNetClassifier(this)
         labelStabilizer = LabelStabilizer(labels = yamNetClassifier.labels)
+
+        // Observe battery and thermal tiers
+        serviceScope.launch {
+            batteryThermalManager.batteryTier.collect { tier ->
+                _batteryTierFlow.value = tier
+                refinementPipeline.batteryTier = tier
+            }
+        }
+        serviceScope.launch {
+            batteryThermalManager.thermalStatusName.collect { status ->
+                _thermalStatusFlow.value = status
+            }
+        }
+        serviceScope.launch {
+            audioCapture.audioSourceWarning.collect { warning ->
+                _audioSourceWarningFlow.value = warning
+            }
+        }
 
         // Connect audio capture output frames to the pipeline
         audioCapture.onFrameRead = { frameSamples, isEarbud ->
@@ -252,6 +292,7 @@ class DotProService : Service() {
         if (started) {
             _serviceStateFlow.value = DotProServiceState.ACTIVE
             _activeAudioSourceFlow.value = audioCapture.activeAudioSourceName.value
+            _audioSourceWarningFlow.value = audioCapture.audioSourceWarning.value
             Log.i(TAG, "DoTPro module pipeline ACTIVE [source: ${_activeAudioSourceFlow.value}]")
         } else {
             _serviceStateFlow.value = DotProServiceState.DEGRADED
@@ -294,28 +335,30 @@ class DotProService : Service() {
             val started = audioCapture.start()
             _serviceStateFlow.value = if (started) DotProServiceState.ACTIVE else DotProServiceState.DEGRADED
             _activeAudioSourceFlow.value = audioCapture.activeAudioSourceName.value
+            _audioSourceWarningFlow.value = audioCapture.audioSourceWarning.value
             Log.i(TAG, "DoTPro module RESUMED -> ${_serviceStateFlow.value}")
         }
     }
 
     /**
      * Executes the pipeline sequence on each 50ms audio frame:
-     * 1. RefinementPipeline -> Refined 48 kHz + Anti-Aliased 16 kHz downsampled stream + SNR/Makeup gain telemetry
+     * 1. RefinementPipeline (SCALE first, then SHAPE) -> Refined 48 kHz + Anti-Aliased 16 kHz downsampled stream
      * 2. FeatureExtractor -> FrameFeatures extracted from refined 16 kHz stream
-     * 3. YamNetGate -> Three-state evaluation (ACTIVE, AMBIENT, SILENT) and cadence evaluation
-     * 4. YamNetClassifier -> Classify 16 kHz PCM window (~15,600 samples)
+     * 3. YamNetGate -> Three-state evaluation (ACTIVE, AMBIENT, SILENT) with SNR gate agreement & battery tiering
+     * 4. YamNetClassifier -> Classify 16 kHz PCM window (~15,600 samples) via XNNPACK/NNAPI
      * 5. LabelStabilizer -> Temporal smoothing over 3-5s rolling score vectors & anti-flicker
      * 6. DisplayLabelFormatter -> "<Class>, <state>" rich diagnostic label
      * 7. PresenceTracker -> State machine with hysteresis & label stability
-     * 8. DotProEventEmitter -> Emit DoTProEvent objects at rate <= 4/sec
+     * 8. DotProEventEmitter -> Emit DoTProEvent objects (with normalized flag & battery tier)
      */
     private fun processFrame(raw48kSamples: FloatArray, isEarbud: Boolean) {
         if (_serviceStateFlow.value != DotProServiceState.ACTIVE) return
 
         val timestamp = System.currentTimeMillis()
+        val currentTier = batteryThermalManager.batteryTier.value
+        refinementPipeline.batteryTier = currentTier
 
-        // 1. REFINEMENT PIPELINE (runs on 48 kHz stream)
-        // DC blocker -> 40Hz HPF -> Adaptive per-band gain stage -> Multiband compressor -> Brickwall limiter -> 16kHz downsampler
+        // 1. REFINEMENT PIPELINE (runs continuously on 48 kHz stream)
         val refinementOutput = refinementPipeline.process(raw48kSamples)
 
         // Store refined 16 kHz samples into ring buffer for YAMNet
@@ -328,6 +371,7 @@ class DotProService : Service() {
 
         // Keep active audio source updated
         _activeAudioSourceFlow.value = audioCapture.activeAudioSourceName.value
+        _audioSourceWarningFlow.value = audioCapture.audioSourceWarning.value
 
         // 3. GATING & THREE-STATE AMBIENT MODEL (YamNetGate)
         val hasActiveTrack = presenceTracker.hasActiveTracks()
@@ -336,7 +380,10 @@ class DotProService : Service() {
             refinedRms = refinementOutput.refinedRms,
             hardwareFloorRms = refinementOutput.hardwareFloorRms,
             hasActivePresenceTrack = hasActiveTrack,
-            currentTimestampMs = timestamp
+            currentTimestampMs = timestamp,
+            snrDb = refinementOutput.estimatedSnrDb,
+            isSilentGateClosed = refinementOutput.isSilentGateClosed,
+            batteryTier = currentTier
         )
 
         val currentState = yamNetGate.currentState
@@ -375,11 +422,20 @@ class DotProService : Service() {
             refinedRms = refinementOutput.refinedRms,
             snrDb = refinementOutput.estimatedSnrDb,
             makeupGainDb = refinementOutput.makeupGainDb,
+            referenceLoudnessDb = refinementOutput.referenceLoudnessDb,
+            normalizationOffsetDb = refinementOutput.normalizationOffsetDb,
+            bandLiftsDb = refinementOutput.bandLiftsDb,
             hardwareFloorRms = refinementOutput.hardwareFloorRms,
             maxCompressorReductionDb = maxCompReduction,
+            bandCompressorReductionsDb = refinementOutput.compressorReductionDb,
+            isSilentGateClosed = refinementOutput.isSilentGateClosed,
+            batteryTier = currentTier,
+            thermalStatus = batteryThermalManager.thermalStatusName.value,
             ambientState = currentState,
             cadenceDescription = yamNetGate.cadenceDescription,
-            audioSourceName = audioCapture.activeAudioSourceName.value
+            audioSourceName = audioCapture.activeAudioSourceName.value,
+            yamNetDelegate = yamNetClassifier.delegateInUse,
+            audioSourceWarning = audioCapture.audioSourceWarning.value
         )
 
         // 6. Source & Bearing Rules
@@ -395,8 +451,16 @@ class DotProService : Service() {
             displayLabel = displayLabel
         )
 
-        // 8. Event Emission (bounded rate <= 4/sec)
-        val newEvents = eventEmitter.processTracks(tracks, source, timestamp, currentState)
+        // 8. Event Emission (bounded rate <= 4/sec) with normalized state & batteryTier
+        val isNormalized = !refinementOutput.isSilentGateClosed
+        val newEvents = eventEmitter.processTracks(
+            tracks = tracks,
+            source = source,
+            currentTimestampMs = timestamp,
+            ambientState = currentState,
+            normalized = isNormalized,
+            batteryTier = currentTier
+        )
         val allEventsToEmit = mutableListOf<DoTProEvent>()
         allEventsToEmit.addAll(newEvents)
 
@@ -416,7 +480,9 @@ class DotProService : Service() {
                 confidence = stabilizedLabel.confidence,
                 timestampMs = timestamp,
                 displayLabel = displayLabel,
-                state = AmbientState.AMBIENT
+                state = AmbientState.AMBIENT,
+                normalized = isNormalized,
+                batteryTier = currentTier
             )
             allEventsToEmit.add(ambientEvent)
         }
@@ -424,7 +490,6 @@ class DotProService : Service() {
         if (allEventsToEmit.isNotEmpty()) {
             serviceScope.launch(Dispatchers.Main) {
                 val currentList = _recentEventsFlow.value
-                // Append newest events at the end for chronological scrolling
                 val updated = (currentList + allEventsToEmit).takeLast(100)
                 _recentEventsFlow.value = updated
             }
@@ -434,6 +499,7 @@ class DotProService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         stopModule()
+        batteryThermalManager.release()
         yamNetClassifier.close()
         serviceScope.cancel()
     }

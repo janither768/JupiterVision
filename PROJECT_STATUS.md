@@ -1,7 +1,7 @@
 # JupiterVision — Project Status & Architecture Report
 
-**Version:** 2112.18 DoTPro  
-**Target Build:** `2112.18_DoTPro.apk`  
+**Version:** 2112.18 DoTPro-GEN-evolve  
+**Target Build:** `2112.18_DoTPro-GEN-evolve.apk`  
 **Platform:** Android (Jetpack Compose + Single Hardware Canvas Engine + DoTPro Acoustic Reflex)  
 **Repository:** `janither768/JupiterVision`  
 
@@ -9,13 +9,22 @@
 
 ## 1. Executive Summary
 
-**JupiterVision 2112.18 DoTPro** integrates the complete Downtown Proximity (DoTPro) acoustic reflex and refinement pipeline:
-- **Audio Source Selection**: Prioritizes `MediaRecorder.AudioSource.UNPROCESSED` (disabling AGC/AEC/NS) with fallback to `VOICE_RECOGNITION` and `MIC`. Real-time active source surfacing.
-- **Refinement Pipeline (`RefinementPipeline.kt`)**: 48 kHz digital signal chain: DC blocker -> 40 Hz 2nd-order Butterworth HPF -> Adaptive 5-band gain stage (+18 dB cap, no spectral subtraction; room tone IS signal) -> 4-band gentle compressor (1.8:1) -> Brickwall limiter (-1 dBFS) -> 3:1 anti-aliasing decimation FIR downsampler to 16 kHz.
-- **SNR Measurement**: Relative to estimated mic hardware self-noise floor (tracked over initial startup).
-- **Three-State Ambient Model**: `ACTIVE` (presence tracks firing; immediate classification), `AMBIENT` (stable room tone; 7-10s cadence), and `SILENT` (below floor; idle YAMNet).
-- **YAMNet Classifier (`YamNetClassifier.kt`)**: 521 AudioSet classes, 16 kHz PCM windows, explicit 11-class taxonomy mapping, 3-5s rolling score temporal smoothing, and "<Class>, <state>" display label formatting.
-- **Diagnostic UI Surface (`DotProDebugScreen.kt`)**: Real-time refinement telemetry (SNR, lift gain, compressor reduction, floor RMS), audio source and ambient state pills, and auto-scrolling live event log.
+**JupiterVision 2112.18 DoTPro-GEN-evolve** implements the complete Scale-Normalization architecture, dynamic reference tracking, SNR-gated SILENT protection, 5-tier battery/thermal throttling, and low-end Android DSP tuning:
+- **Audio Capture & Low-End Fallback (`AudioCapture.kt`)**: Prioritizes `MediaRecorder.AudioSource.UNPROCESSED` (bypassing hardware AGC/AEC/NS) -> `VOICE_RECOGNITION` -> `MIC` (surfaced with warning). Supports 48 kHz native with fallback to 44.1 kHz + in-pipeline linear resampling.
+- **Refinement Pipeline (`RefinementPipeline.kt`)**: Two-stage SCALE then SHAPE architecture:
+  - DC blocker (~5 Hz single-pole)
+  - 40 Hz 2nd-order Butterworth HPF (RBJ biquad)
+  - Short-window loudness estimator (rolling RMS over 2.5s in dBFS)
+  - Dynamic reference tracker (median of loudness over 25s via rolling sorted buffer, O(log n))
+  - Scale normalization ($offset = TARGET\_LEVEL - reference\_dB$, clamped -6 dB to +40 dB)
+  - Adaptive per-band EQ tilt on normalized signal (5 bands via Linkwitz-Riley LR4 crossovers at 120 Hz, 500 Hz, 2 kHz, 6 kHz; capped at +12 dB per band; disabled in SILENT)
+  - 5-band compressor (attack ~50ms, release ~300ms, 1.8:1 ratio, max -6 dB reduction per band)
+  - Brickwall limiter (-1 dBFS ceiling, 2ms lookahead delay line, tanh saturation)
+  - Downsampler to 16 kHz (anti-aliasing FIR filter and 3:1 decimation)
+- **SNR Gate & SILENT State Protection**: Hardware self-noise floor tracked over first 3 seconds and persisted. Sustained SNR <= 3 dB declares SILENT, disabling per-band boost and silencing YAMNet.
+- **Battery & Thermal Tiers (`BatteryThermalManager.kt`)**: 5 tiers (Tier 0 to Tier 4) with hysteretic transitions managing YAMNet cadence (immediate / 7s / 15s / suspended / idle).
+- **YAMNet ML Optimization (`YamNetClassifier.kt`)**: Threads capped at 2, NNAPI attempted first with silent fallback to mandatory XNNPACK delegate.
+- **Diagnostic UI Surface (`DotProDebugScreen.kt`)**: Prominent state banner (ACTIVE / AMBIENT / SILENT), live reference level (dBFS), normalization offset (+/- dB), per-band EQ lift bars, SNR, gate state, battery tier, thermal status, active source, delegate, cadence, side-by-side raw vs normalized RMS sparklines, and auto-scrolling live event log.
 
 ---
 

@@ -16,19 +16,20 @@ enum class GateTriggerReason {
 
 /**
  * 2. GATING & THREE-STATE AMBIENT MODEL — YamNetGate
- * Enforces the battery contract and state transitions with hysteresis:
+ * Enforces the battery contract, SNR gate agreement, and state transitions with hysteresis.
  *
- * ACTIVE:
- * - A presence track is firing / something is changing.
- * - YAMNet fires immediately on activity/transient spikes + ~1.5s refresh.
+ * Three states:
+ * - ACTIVE:
+ *   - Presence track is firing / something is changing.
+ *   - YAMNet fires immediately on activity/transient spikes (500ms debounce) + ~1.5s refresh.
  *
- * AMBIENT:
- * - No active track, but stable room tone above hardware floor.
- * - YAMNet fires on slow cadence: 7s (normal), 15s (low battery < 20% or power save), idle (< 10%).
+ * - AMBIENT:
+ *   - No active presence track AND SNR > SILENT_THRESHOLD AND stable content above reference.
+ *   - YAMNet fires on cadence: 7s (Tier 0), 15s (Tier 1), suspended (Tier 2..4).
  *
- * SILENT:
- * - Genuinely at or below hardware noise floor.
- * - YAMNet does NOT fire (idle).
+ * - SILENT:
+ *   - No active presence track AND SNR <= SILENT_THRESHOLD for sustained window (~2s).
+ *   - YAMNet does NOT fire (idle, 0 CPU). Silence is a state.
  */
 class YamNetGate {
 
@@ -38,12 +39,12 @@ class YamNetGate {
         private const val ACTIVE_REFRESH_INTERVAL_MS = 1500L
 
         // AMBIENT Cadences
-        private const val AMBIENT_CADENCE_NORMAL_MS = 7000L
-        private const val AMBIENT_CADENCE_LOW_BATTERY_MS = 15000L
+        private const val AMBIENT_CADENCE_TIER0_MS = 7000L
+        private const val AMBIENT_CADENCE_TIER1_MS = 15000L
 
         // Hysteresis frame hold counters (at 20fps = 50ms per frame)
-        private const val SILENCE_HOLD_FRAMES = 25  // 1.25s below floor before AMBIENT -> SILENT
-        private const val AMBIENT_HOLD_FRAMES = 8   // 400ms above floor before SILENT -> AMBIENT
+        private const val SILENCE_HOLD_FRAMES = 35  // ~1.75s below floor before AMBIENT -> SILENT
+        private const val AMBIENT_HOLD_FRAMES = 8   // ~400ms above floor before SILENT -> AMBIENT
 
         // Spikes above baseline for activity trigger
         private const val ACTIVITY_RATIO_FACTOR = 1.45f
@@ -69,38 +70,40 @@ class YamNetGate {
     // Thermal & Battery status
     var batteryPercentage: Int = 100
     var isPowerSaveMode: Boolean = false
+    var currentBatteryTier: Int = 0
 
     /**
-     * Backward-compatible helper method for evaluation.
-     */
-    fun shouldInvoke(
-        features: FrameFeatures,
-        hasActivePresenceTrack: Boolean,
-        currentTimestampMs: Long
-    ): Boolean {
-        return evaluate(
-            features = features,
-            refinedRms = features.frameRms,
-            hardwareFloorRms = 0.003f,
-            hasActivePresenceTrack = hasActivePresenceTrack,
-            currentTimestampMs = currentTimestampMs
-        )
-    }
-
-    /**
-     * Updates state transitions with hysteresis and evaluates whether YAMNet should run this frame.
+     * Evaluates state transitions and determines if YAMNet should execute.
      */
     fun evaluate(
         features: FrameFeatures,
         refinedRms: Float,
         hardwareFloorRms: Float,
         hasActivePresenceTrack: Boolean,
-        currentTimestampMs: Long
+        currentTimestampMs: Long,
+        snrDb: Float = 10f,
+        isSilentGateClosed: Boolean = false,
+        batteryTier: Int = 0
     ): Boolean {
-        // 1. Update State Transitions with Hysteresis
-        updateStateTransitions(refinedRms, hardwareFloorRms, hasActivePresenceTrack)
+        currentBatteryTier = batteryTier
 
-        // 2. Determine Cadence Interval based on State and Battery
+        // 1. Update State Transitions with Hysteresis
+        updateStateTransitions(
+            refinedRms = refinedRms,
+            hardwareFloorRms = hardwareFloorRms,
+            hasActivePresenceTrack = hasActivePresenceTrack,
+            snrDb = snrDb,
+            isSilentGateClosed = isSilentGateClosed
+        )
+
+        // 2. Battery Tier 3 & 4: YAMNet is fully idle across all states
+        if (batteryTier >= 3) {
+            cadenceDescription = "idle (tier $batteryTier power save)"
+            lastTriggerReason = GateTriggerReason.NONE
+            return false
+        }
+
+        // 3. Cadence and trigger evaluation per state
         val timeSinceLast = currentTimestampMs - lastInferenceTimestampMs
 
         when (currentState) {
@@ -130,26 +133,35 @@ class YamNetGate {
             }
 
             AmbientState.AMBIENT -> {
-                // Thermal/battery backoff:
-                // Normal (> 20%): 7s
-                // Low battery (< 20% or power save): 15s
-                // Critical (< 10%): idle (suspended ambient)
-                val cadenceMs = when {
-                    batteryPercentage < 10 -> {
-                        cadenceDescription = "idle (critical battery)"
-                        Long.MAX_VALUE
+                // Tier 2: AMBIENT YAMNet suspended. Only ACTIVE spikes fire YAMNet.
+                if (batteryTier >= 2) {
+                    cadenceDescription = "idle (tier 2 suspended ambient)"
+                    // Still detect sudden activity spike to transition to active
+                    val isActivitySpike = features.isTransient ||
+                            features.changeMagnitude > TRANSIENT_DELTA_THRESHOLD ||
+                            features.frameRms > (features.baselineRms * ACTIVITY_RATIO_FACTOR + ACTIVITY_ENERGY_MARGIN)
+                    if (isActivitySpike && timeSinceLast >= MIN_ACTIVE_INTERVAL_MS) {
+                        currentState = AmbientState.ACTIVE
+                        lastTriggerReason = if (features.isTransient) GateTriggerReason.TRANSIENT_SPIKE else GateTriggerReason.ENERGY_ACTIVITY
+                        lastInferenceTimestampMs = currentTimestampMs
+                        return true
                     }
-                    batteryPercentage < 20 || isPowerSaveMode -> {
-                        cadenceDescription = "15s (low-battery ambient)"
-                        AMBIENT_CADENCE_LOW_BATTERY_MS
+                    lastTriggerReason = GateTriggerReason.NONE
+                    return false
+                }
+
+                val cadenceMs = when (batteryTier) {
+                    1 -> {
+                        cadenceDescription = "15s (tier 1 ambient)"
+                        AMBIENT_CADENCE_TIER1_MS
                     }
                     else -> {
                         cadenceDescription = "7s (ambient)"
-                        AMBIENT_CADENCE_NORMAL_MS
+                        AMBIENT_CADENCE_TIER0_MS
                     }
                 }
 
-                // Check for activity spike that would push to active immediately
+                // Check for activity spike pushing into active immediately
                 val isActivitySpike = features.isTransient ||
                         features.changeMagnitude > TRANSIENT_DELTA_THRESHOLD ||
                         features.frameRms > (features.baselineRms * ACTIVITY_RATIO_FACTOR + ACTIVITY_ENERGY_MARGIN)
@@ -161,7 +173,7 @@ class YamNetGate {
                     return true
                 }
 
-                // Periodic ambient refresh
+                // Periodic ambient cadence
                 if (timeSinceLast >= cadenceMs) {
                     lastTriggerReason = GateTriggerReason.AMBIENT_CADENCE
                     lastInferenceTimestampMs = currentTimestampMs
@@ -175,7 +187,7 @@ class YamNetGate {
             AmbientState.SILENT -> {
                 cadenceDescription = "idle (silent)"
 
-                // If activity spike occurs from silence, immediately wake to active
+                // If activity spike occurs from silence, wake to active
                 val isActivitySpike = features.isTransient || features.changeMagnitude > TRANSIENT_DELTA_THRESHOLD
                 if (isActivitySpike && timeSinceLast >= MIN_ACTIVE_INTERVAL_MS) {
                     currentState = AmbientState.ACTIVE
@@ -184,7 +196,7 @@ class YamNetGate {
                     return true
                 }
 
-                // SILENT -> YAMNet is completely idle (0 CPU)
+                // SILENT: YAMNet does not fire
                 lastTriggerReason = GateTriggerReason.NONE
                 return false
             }
@@ -192,18 +204,28 @@ class YamNetGate {
     }
 
     /**
-     * Strict hysteresis state transition machine:
-     * - ACTIVE -> AMBIENT: last presence track exits and room tone > floor
-     * - ACTIVE -> SILENT: last presence track exits and room tone <= floor
-     * - AMBIENT -> ACTIVE: presence track begins firing
-     * - AMBIENT -> SILENT: room tone drops below floor for sustained window (25 frames)
-     * - SILENT -> AMBIENT: room tone crosses floor and holds (8 frames)
-     * - SILENT -> ACTIVE: activity spike spawns presence track
+     * Backward-compatible helper method for evaluation.
      */
+    fun shouldInvoke(
+        features: FrameFeatures,
+        hasActivePresenceTrack: Boolean,
+        currentTimestampMs: Long
+    ): Boolean {
+        return evaluate(
+            features = features,
+            refinedRms = features.frameRms,
+            hardwareFloorRms = 0.003f,
+            hasActivePresenceTrack = hasActivePresenceTrack,
+            currentTimestampMs = currentTimestampMs
+        )
+    }
+
     private fun updateStateTransitions(
         refinedRms: Float,
         hardwareFloorRms: Float,
-        hasActivePresenceTrack: Boolean
+        hasActivePresenceTrack: Boolean,
+        snrDb: Float,
+        isSilentGateClosed: Boolean
     ) {
         val ambientThreshold = hardwareFloorRms * 1.65f
         val silenceThreshold = hardwareFloorRms * 1.25f
@@ -217,8 +239,10 @@ class YamNetGate {
 
         when (currentState) {
             AmbientState.ACTIVE -> {
-                // Presence track just exited
-                if (refinedRms > ambientThreshold) {
+                if (isSilentGateClosed || (snrDb <= 3.0f && refinedRms <= silenceThreshold)) {
+                    currentState = AmbientState.SILENT
+                    aboveFloorCounter = 0
+                } else if (refinedRms > ambientThreshold) {
                     currentState = AmbientState.AMBIENT
                     belowFloorCounter = 0
                 } else {
@@ -228,8 +252,7 @@ class YamNetGate {
             }
 
             AmbientState.AMBIENT -> {
-                // Check if dropping into silence
-                if (refinedRms <= silenceThreshold) {
+                if (isSilentGateClosed || snrDb <= 3.0f || refinedRms <= silenceThreshold) {
                     belowFloorCounter++
                     if (belowFloorCounter >= SILENCE_HOLD_FRAMES) {
                         currentState = AmbientState.SILENT
@@ -241,8 +264,7 @@ class YamNetGate {
             }
 
             AmbientState.SILENT -> {
-                // Check if rising into ambient room tone
-                if (refinedRms > ambientThreshold) {
+                if (!isSilentGateClosed && snrDb > 3.0f && refinedRms > ambientThreshold) {
                     aboveFloorCounter++
                     if (aboveFloorCounter >= AMBIENT_HOLD_FRAMES) {
                         currentState = AmbientState.AMBIENT

@@ -1,6 +1,7 @@
 package com.jupiter.vision.dotpro.classifier
 
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
@@ -10,9 +11,10 @@ import java.nio.channels.FileChannel
 /**
  * 1. SIGNAL CLASSIFIER — YamNetClassifier
  * - Model: YAMNet via TensorFlow Lite. 521 AudioSet classes.
- * - Input: 16 kHz mono PCM, 1-second windows (~15,600 samples), matching YAMNet's expected input.
+ * - Input: 16 kHz mono PCM, ~1-second windows (~15,600 samples).
+ * - Delegates: Attempts NNAPI on capable devices (API 27+), silently falling back to mandatory XNNPACK.
+ * - Threads: Capped at 2 to minimize scheduling overhead on low-end SoCs.
  * - Output: per-class score vector (521 floats).
- * - No custom training. No custom model. Uses pre-trained YAMNet as-is.
  */
 class YamNetClassifier(private val context: Context) {
 
@@ -30,6 +32,9 @@ class YamNetClassifier(private val context: Context) {
     var isInitialized: Boolean = false
         private set
 
+    var delegateInUse: String = "XNNPACK"
+        private set
+
     private var inputSize: Int = DEFAULT_INPUT_SAMPLES
     private var outputFrames: Int = 1
 
@@ -40,11 +45,39 @@ class YamNetClassifier(private val context: Context) {
     private fun initialize() {
         try {
             val byteBuffer = loadModelFile(context, MODEL_FILE)
-            val options = Interpreter.Options().apply {
-                setNumThreads(2)
+            var interp: Interpreter? = null
+            var chosenDelegate = "XNNPACK"
+
+            // 1. Attempt NNAPI delegate first if Android 8.1+ (API 27+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                try {
+                    val nnapiOptions = Interpreter.Options().apply {
+                        setNumThreads(2)
+                        setUseNNAPI(true)
+                    }
+                    val testInterp = Interpreter(byteBuffer, nnapiOptions)
+                    interp = testInterp
+                    chosenDelegate = "NNAPI"
+                    Log.i(TAG, "YAMNet successfully initialized with NNAPI delegate")
+                } catch (e: Throwable) {
+                    Log.w(TAG, "NNAPI initialization failed, silently falling back to XNNPACK", e)
+                    interp = null
+                }
             }
-            val interp = Interpreter(byteBuffer, options)
+
+            // 2. Fall back to mandatory XNNPACK delegate
+            if (interp == null) {
+                val xnnpackOptions = Interpreter.Options().apply {
+                    setNumThreads(2)
+                    setUseXNNPACK(true)
+                }
+                interp = Interpreter(byteBuffer, xnnpackOptions)
+                chosenDelegate = "XNNPACK"
+                Log.i(TAG, "YAMNet successfully initialized with XNNPACK delegate")
+            }
+
             interpreter = interp
+            delegateInUse = chosenDelegate
 
             // Inspect input shape
             val inShape = interp.getInputTensor(0).shape()
@@ -59,7 +92,7 @@ class YamNetClassifier(private val context: Context) {
             }
 
             isInitialized = true
-            Log.i(TAG, "YAMNet initialized: inputSize=$inputSize, outputFrames=$outputFrames, classes=${labels.size}")
+            Log.i(TAG, "YAMNet initialized: delegate=$delegateInUse, inputSize=$inputSize, outputFrames=$outputFrames, classes=${labels.size}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize YamNetClassifier", e)
             isInitialized = false

@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.jupitervision.tftjvx"
     minSdk = 24
     targetSdk = 36
-    versionCode = 211220
-    versionName = "2112.18_DoTPro"
+    versionCode = 211221
+    versionName = "2112.18_DoTPro-GEN-evolve"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

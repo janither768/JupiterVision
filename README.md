@@ -1,14 +1,14 @@
-# JupiterVision 2112.16 II
+# JupiterVision 2112.18 DoTPro-GEN-evolve
 
 [![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://android.com)
 [![Kotlin](https://img.shields.io/badge/Language-Kotlin-blue.svg)](https://kotlinlang.org)
 [![Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-purple.svg)](https://developer.android.com/jetpack/compose)
 
-JupiterVision is a futuristic Android launcher featuring a hardware-accelerated single-canvas tile grid, intelligent application categorization folders, high-performance GPU matrix focus overlays, procedural wallpaper-per-tile rendering, and modular mini-apps.
+JupiterVision is a futuristic Android launcher featuring a hardware-accelerated single-canvas tile grid, intelligent application categorization folders, high-performance GPU matrix focus overlays, procedural wallpaper-per-tile rendering, and the DoTPro near-field acoustic reflex engine.
 
-## ✨ Latest Release: 2112.16 II (Fixed)
+## ✨ Latest Release: 2112.18 DoTPro-GEN-evolve
 
-Download the latest APK: **[Jupitervision_2112.16_II_fixed.apk](Jupitervision_2112.16_II_fixed.apk)**
+Download the latest APK: **[2112.18_DoTPro-GEN-evolve.apk](2112.18_DoTPro-GEN-evolve.apk)**
 
 ### Key Highlights
 - **Fluid Folder Lifecycle**: Tap to un-dim icons and slide labels away; touch any app quadrant to launch immediately. Auto-returns after 10 seconds of inactivity.
