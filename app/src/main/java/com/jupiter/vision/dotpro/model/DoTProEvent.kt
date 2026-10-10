@@ -16,8 +16,21 @@ data class DoTProEvent(
     val change: Boolean,
     val confidence: Float,
     val timestampMs: Long,
-    val displayLabel: String = ""
+    val displayLabel: String = "",
+    val state: AmbientState = AmbientState.ACTIVE
 )
+
+/**
+ * Three-state ambient model:
+ * ACTIVE: Presence track firing, active sound source changing
+ * AMBIENT: Stable room tone/fan/hum above hardware noise floor
+ * SILENT: Signal at or below mic hardware self-noise floor
+ */
+enum class AmbientState {
+    ACTIVE,
+    AMBIENT,
+    SILENT
+}
 
 /**
  * Taxonomy of signal types (v1).

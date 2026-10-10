@@ -20,10 +20,12 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Continuous raw PCM via AudioRecord. 16 kHz, mono.
+ * Continuous raw PCM via AudioRecord at 48 kHz mono.
+ * Preferred source: MediaRecorder.AudioSource.UNPROCESSED (disables AGC/AEC/NS).
+ * Fallbacks: VOICE_RECOGNITION -> MIC.
  * Ring buffer only. Never written to disk. Never transmitted.
- * Reads into a rolling window of short frames (50 ms = 800 samples at 16 kHz).
- * Routed through earbud mic when earbuds are connected.
+ * Reads into short frames (50 ms = 2400 samples at 48 kHz).
+ * Feeds RefinementPipeline which outputs refined 48 kHz and downsamples to 16 kHz.
  */
 class AudioCapture(
     private val context: Context,
@@ -31,29 +33,63 @@ class AudioCapture(
 ) {
     companion object {
         private const val TAG = "AudioCapture"
-        const val SAMPLE_RATE = 16000
+        const val SAMPLE_RATE = 48000
         const val FRAME_DURATION_MS = 50
-        const val SAMPLES_PER_FRAME = (SAMPLE_RATE * FRAME_DURATION_MS) / 1000 // 800 samples
+        const val SAMPLES_PER_FRAME = (SAMPLE_RATE * FRAME_DURATION_MS) / 1000 // 2400 samples @ 48kHz
 
-        // Ring buffer capacity (e.g. ~4 seconds of audio = 80 frames = 64,000 samples)
-        private const val RING_BUFFER_CAPACITY = SAMPLES_PER_FRAME * 80
+        // 48 kHz Ring buffer capacity (~4 seconds = 80 frames = 192,000 samples)
+        private const val RING_BUFFER_CAPACITY_48K = SAMPLES_PER_FRAME * 80
+
+        // 16 kHz Ring buffer capacity (~4 seconds = 80 frames = 64,000 samples)
+        private const val RING_BUFFER_CAPACITY_16K = 800 * 80
     }
 
-    // In-memory raw PCM ring buffer (NEVER written to disk, NEVER transmitted)
-    private val ringBuffer = FloatArray(RING_BUFFER_CAPACITY)
-    private var writeHead = 0
+    // In-memory raw PCM ring buffers (NEVER written to disk, NEVER transmitted)
+    private val ringBuffer48k = FloatArray(RING_BUFFER_CAPACITY_48K)
+    private var writeHead48k = 0
+
+    private val ringBuffer16k = FloatArray(RING_BUFFER_CAPACITY_16K)
+    private var writeHead16k = 0
+
+    private val _activeAudioSourceName = MutableStateFlow("UNKNOWN")
+    val activeAudioSourceName: StateFlow<String> = _activeAudioSourceName.asStateFlow()
 
     /**
-     * Retrieves the most recent [sampleCount] audio samples from volatile ring buffer.
-     * Never saved, never transmitted.
+     * Retrieves the most recent [sampleCount] 48kHz audio samples from volatile ring buffer.
      */
     @Synchronized
     fun getRecentSamples(sampleCount: Int): FloatArray {
-        val count = minOf(sampleCount, RING_BUFFER_CAPACITY)
+        val count = minOf(sampleCount, RING_BUFFER_CAPACITY_48K)
         val result = FloatArray(count)
-        val start = (writeHead - count + RING_BUFFER_CAPACITY) % RING_BUFFER_CAPACITY
+        val start = (writeHead48k - count + RING_BUFFER_CAPACITY_48K) % RING_BUFFER_CAPACITY_48K
         for (i in 0 until count) {
-            result[i] = ringBuffer[(start + i) % RING_BUFFER_CAPACITY]
+            result[i] = ringBuffer48k[(start + i) % RING_BUFFER_CAPACITY_48K]
+        }
+        return result
+    }
+
+    /**
+     * Appends refined downsampled 16kHz samples (800 samples per 50ms frame) into the 16k ring buffer.
+     */
+    @Synchronized
+    fun append16kSamples(samples: FloatArray) {
+        val n = samples.size
+        for (i in 0 until n) {
+            ringBuffer16k[(writeHead16k + i) % RING_BUFFER_CAPACITY_16K] = samples[i]
+        }
+        writeHead16k = (writeHead16k + n) % RING_BUFFER_CAPACITY_16K
+    }
+
+    /**
+     * Retrieves the most recent [sampleCount] 16kHz audio samples for YAMNet (e.g. 15600 samples).
+     */
+    @Synchronized
+    fun getRecent16kSamples(sampleCount: Int): FloatArray {
+        val count = minOf(sampleCount, RING_BUFFER_CAPACITY_16K)
+        val result = FloatArray(count)
+        val start = (writeHead16k - count + RING_BUFFER_CAPACITY_16K) % RING_BUFFER_CAPACITY_16K
+        for (i in 0 until count) {
+            result[i] = ringBuffer16k[(start + i) % RING_BUFFER_CAPACITY_16K]
         }
         return result
     }
@@ -62,7 +98,7 @@ class AudioCapture(
     private var recordingJob: Job? = null
     private val isRunning = AtomicBoolean(false)
 
-    // Listener for frame outputs
+    // Listener for frame outputs (48kHz float array, isEarbud)
     var onFrameRead: ((FloatArray, Boolean) -> Unit)? = null
 
     // Route tracking
@@ -100,7 +136,10 @@ class AudioCapture(
     }
 
     /**
-     * Start continuous audio recording.
+     * Start continuous 48 kHz audio recording with source prioritization:
+     * 1. UNPROCESSED (disables AGC/AEC/NS)
+     * 2. VOICE_RECOGNITION (minimal processing)
+     * 3. MIC (fallback)
      */
     @SuppressLint("MissingPermission")
     @Synchronized
@@ -114,22 +153,54 @@ class AudioCapture(
         )
         val bufferSizeInBytes = maxOf(minBufSize, SAMPLES_PER_FRAME * 2 * 4)
 
-        try {
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                bufferSizeInBytes
-            )
+        // Determine if UNPROCESSED is supported
+        val isUnprocessedSupported = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && audioManager != null) {
+            audioManager.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED)?.toBoolean() == true
+        } else {
+            false
+        }
 
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioRecord failed to initialize")
-                audioRecord?.release()
-                audioRecord = null
-                return false
+        val candidateSources = mutableListOf<Pair<Int, String>>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && (isUnprocessedSupported || Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)) {
+            candidateSources.add(MediaRecorder.AudioSource.UNPROCESSED to "UNPROCESSED")
+        }
+        candidateSources.add(MediaRecorder.AudioSource.VOICE_RECOGNITION to "VOICE_RECOGNITION")
+        candidateSources.add(MediaRecorder.AudioSource.MIC to "MIC (Fallback)")
+
+        var chosenRecord: AudioRecord? = null
+        var chosenName = "MIC"
+
+        for ((source, name) in candidateSources) {
+            try {
+                val record = AudioRecord(
+                    source,
+                    SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSizeInBytes
+                )
+                if (record.state == AudioRecord.STATE_INITIALIZED) {
+                    chosenRecord = record
+                    chosenName = name
+                    Log.i(TAG, "Successfully initialized AudioRecord with source: $name at 48kHz")
+                    break
+                } else {
+                    record.release()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed candidate audio source: $name", e)
             }
+        }
 
+        if (chosenRecord == null) {
+            Log.e(TAG, "AudioRecord failed to initialize with all candidate sources")
+            return false
+        }
+
+        audioRecord = chosenRecord
+        _activeAudioSourceName.value = chosenName
+
+        try {
             // Route to earbud device if available on Android M+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && audioManager != null) {
                 val inputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
@@ -172,13 +243,13 @@ class AudioCapture(
 
                     if (samplesRead == SAMPLES_PER_FRAME) {
                         // Normalize 16-bit PCM shorts to floats [-1.0f, 1.0f]
-                        // and write into volatile ring buffer
+                        // and write into volatile 48 kHz ring buffer
                         for (i in 0 until SAMPLES_PER_FRAME) {
                             val sample = shortBuffer[i] / 32768.0f
                             frameFloats[i] = sample
-                            ringBuffer[(writeHead + i) % RING_BUFFER_CAPACITY] = sample
+                            ringBuffer48k[(writeHead48k + i) % RING_BUFFER_CAPACITY_48K] = sample
                         }
-                        writeHead = (writeHead + SAMPLES_PER_FRAME) % RING_BUFFER_CAPACITY
+                        writeHead48k = (writeHead48k + SAMPLES_PER_FRAME) % RING_BUFFER_CAPACITY_48K
 
                         val isEarbud = _isEarbudConnected.value
                         onFrameRead?.invoke(frameFloats.clone(), isEarbud)

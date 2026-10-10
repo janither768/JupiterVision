@@ -126,4 +126,68 @@ class YamNetPipelineUnitTest {
         assertEquals("Music", label1.yamnetClass)
         assertEquals(Signal.MUSIC, label1.taxonomySignal)
     }
+
+    @Test
+    fun testRefinementPipelineProcessingAndDownsampling() {
+        val pipeline = com.jupiter.vision.dotpro.audio.RefinementPipeline()
+
+        // 2400 samples (50ms @ 48kHz) with DC offset and 100 Hz tone
+        val raw48k = FloatArray(2400) { i ->
+            0.15f + 0.05f * kotlin.math.sin(2.0 * kotlin.math.PI * 100.0 * i / 48000.0).toFloat()
+        }
+
+        val output = pipeline.process(raw48k)
+
+        // Verifies output dimensions
+        assertEquals(2400, output.refined48kSamples.size)
+        assertEquals(800, output.refined16kSamples.size)
+
+        // Verifies DC blocking and limiter (< 1.0f)
+        assertTrue(output.refinedRms > 0f)
+        assertTrue(output.estimatedSnrDb > -100f)
+        for (s in output.refined48kSamples) {
+            assertTrue(s <= 1.0f && s >= -1.0f)
+        }
+    }
+
+    @Test
+    fun testThreeStateAmbientModelTransitions() {
+        val gate = YamNetGate()
+
+        val quietFeatures = FrameFeatures(
+            frameRms = 0.002f,
+            baselineRms = 0.002f,
+            changeMagnitude = 0.0f,
+            isTransient = false,
+            envelopeVelocity = 0.0f,
+            motion = Motion.STATIC,
+            spectralCentroid = 200f,
+            spectralBandwidth = 100f,
+            spectralRolloff = 400f,
+            spectralFlatness = 0.1f,
+            zeroCrossingRate = 0.05f,
+            periodicityEstimate = 0.0f,
+            timestampMs = 1000L
+        )
+
+        // Feed quiet frames below floor until SILENT state locks in
+        var time = 1000L
+        for (i in 0 until 30) {
+            time += 50L
+            gate.evaluate(quietFeatures, refinedRms = 0.002f, hardwareFloorRms = 0.003f, hasActivePresenceTrack = false, currentTimestampMs = time)
+        }
+        assertEquals(com.jupiter.vision.dotpro.model.AmbientState.SILENT, gate.currentState)
+
+        // When ambient room tone appears (> floor)
+        for (i in 0 until 12) {
+            time += 50L
+            gate.evaluate(quietFeatures, refinedRms = 0.015f, hardwareFloorRms = 0.003f, hasActivePresenceTrack = false, currentTimestampMs = time)
+        }
+        assertEquals(com.jupiter.vision.dotpro.model.AmbientState.AMBIENT, gate.currentState)
+
+        // When active presence track begins
+        time += 50L
+        gate.evaluate(quietFeatures, refinedRms = 0.030f, hardwareFloorRms = 0.003f, hasActivePresenceTrack = true, currentTimestampMs = time)
+        assertEquals(com.jupiter.vision.dotpro.model.AmbientState.ACTIVE, gate.currentState)
+    }
 }

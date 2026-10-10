@@ -16,15 +16,21 @@ import androidx.core.app.NotificationCompat
 import com.jupiter.vision.MainActivity
 import com.jupiter.vision.R
 import com.jupiter.vision.dotpro.audio.AudioCapture
+import com.jupiter.vision.dotpro.audio.RefinementPipeline
 import com.jupiter.vision.dotpro.classifier.DisplayLabelFormatter
+import com.jupiter.vision.dotpro.classifier.GateTriggerReason
 import com.jupiter.vision.dotpro.classifier.LabelStabilizer
 import com.jupiter.vision.dotpro.classifier.YamNetClassifier
 import com.jupiter.vision.dotpro.classifier.YamNetGate
 import com.jupiter.vision.dotpro.emitter.DotProEventEmitter
 import com.jupiter.vision.dotpro.features.FeatureExtractor
 import com.jupiter.vision.dotpro.features.FrameFeatures
+import com.jupiter.vision.dotpro.model.AmbientState
 import com.jupiter.vision.dotpro.model.Bearing
 import com.jupiter.vision.dotpro.model.DoTProEvent
+import com.jupiter.vision.dotpro.model.Motion
+import com.jupiter.vision.dotpro.model.Presence
+import com.jupiter.vision.dotpro.model.Proximity
 import com.jupiter.vision.dotpro.model.Signal
 import com.jupiter.vision.dotpro.model.Source
 import com.jupiter.vision.dotpro.tracker.PresenceTracker
@@ -50,12 +56,26 @@ enum class DotProServiceState {
 }
 
 /**
+ * Telemetry snapshot for the refinement pipeline and 3-state engine.
+ */
+data class RefinementTelemetry(
+    val rawRms: Float,
+    val refinedRms: Float,
+    val snrDb: Float,
+    val makeupGainDb: Float,
+    val hardwareFloorRms: Float,
+    val maxCompressorReductionDb: Float,
+    val ambientState: AmbientState,
+    val cadenceDescription: String,
+    val audioSourceName: String
+)
+
+/**
  * DotProService:
  * 1. Persistent, low-importance notification identifying DoTPro as active.
  * 2. Owns the module lifecycle: start, stop, degrade, suspend.
- * 3. All other components (AudioCapture, FeatureExtractor, YamNetClassifier,
- *    YamNetGate, LabelStabilizer, DisplayLabelFormatter, PresenceTracker,
- *    DotProEventEmitter) live inside or are owned by this service.
+ * 3. Integrates the 48 kHz RefinementPipeline, YAMNet classification,
+ *    Three-State Ambient Model (ACTIVE, AMBIENT, SILENT), and DoTPro Event Emitter.
  */
 class DotProService : Service() {
 
@@ -72,6 +92,15 @@ class DotProService : Service() {
         // Global state accessor for debug screen or clients
         private val _serviceStateFlow = MutableStateFlow(DotProServiceState.STOPPED)
         val serviceStateFlow: StateFlow<DotProServiceState> = _serviceStateFlow.asStateFlow()
+
+        private val _ambientStateFlow = MutableStateFlow(AmbientState.AMBIENT)
+        val ambientStateFlow: StateFlow<AmbientState> = _ambientStateFlow.asStateFlow()
+
+        private val _refinementTelemetryFlow = MutableStateFlow<RefinementTelemetry?>(null)
+        val refinementTelemetryFlow: StateFlow<RefinementTelemetry?> = _refinementTelemetryFlow.asStateFlow()
+
+        private val _activeAudioSourceFlow = MutableStateFlow("UNKNOWN")
+        val activeAudioSourceFlow: StateFlow<String> = _activeAudioSourceFlow.asStateFlow()
 
         private val _currentFeaturesFlow = MutableStateFlow<FrameFeatures?>(null)
         val currentFeaturesFlow: StateFlow<FrameFeatures?> = _currentFeaturesFlow.asStateFlow()
@@ -117,6 +146,7 @@ class DotProService : Service() {
 
     // Internal pipeline components
     private lateinit var audioCapture: AudioCapture
+    private val refinementPipeline = RefinementPipeline()
     private val featureExtractor = FeatureExtractor()
     private lateinit var yamNetClassifier: YamNetClassifier
     private val yamNetGate = YamNetGate()
@@ -221,7 +251,8 @@ class DotProService : Service() {
         val started = audioCapture.start()
         if (started) {
             _serviceStateFlow.value = DotProServiceState.ACTIVE
-            Log.i(TAG, "DoTPro module pipeline ACTIVE")
+            _activeAudioSourceFlow.value = audioCapture.activeAudioSourceName.value
+            Log.i(TAG, "DoTPro module pipeline ACTIVE [source: ${_activeAudioSourceFlow.value}]")
         } else {
             _serviceStateFlow.value = DotProServiceState.DEGRADED
             Log.w(TAG, "DoTPro audio capture failed to start; entering DEGRADED state")
@@ -232,12 +263,15 @@ class DotProService : Service() {
     private fun stopModule() {
         _serviceStateFlow.value = DotProServiceState.STOPPED
         audioCapture.stop()
+        refinementPipeline.reset()
         yamNetGate.reset()
         labelStabilizer.reset()
         displayLabelFormatter.reset()
         presenceTracker.reset()
         eventEmitter.reset()
         _currentFeaturesFlow.value = null
+        _ambientStateFlow.value = AmbientState.AMBIENT
+        _refinementTelemetryFlow.value = null
         _currentSignalFlow.value = Signal.UNKNOWN
         _currentSignalConfidenceFlow.value = 0f
         _currentDisplayLabelFlow.value = "Unknown, stable"
@@ -259,51 +293,69 @@ class DotProService : Service() {
         if (_serviceStateFlow.value == DotProServiceState.SUSPENDED) {
             val started = audioCapture.start()
             _serviceStateFlow.value = if (started) DotProServiceState.ACTIVE else DotProServiceState.DEGRADED
+            _activeAudioSourceFlow.value = audioCapture.activeAudioSourceName.value
             Log.i(TAG, "DoTPro module RESUMED -> ${_serviceStateFlow.value}")
         }
     }
 
     /**
      * Executes the pipeline sequence on each 50ms audio frame:
-     * 1. FeatureExtractor -> FrameFeatures (deterministic envelope & spectral features)
-     * 2. YamNetGate -> Gated YAMNet invocation (activity / transient / heartbeat)
-     * 3. LabelStabilizer -> Temporal smoothing over 3-5s rolling score vectors & anti-flicker
-     * 4. DisplayLabelFormatter -> "<Class>, <state>" rich diagnostic label
-     * 5. PresenceTracker -> State machine with hysteresis & label stability
-     * 6. DotProEventEmitter -> Emit DoTProEvent objects at rate <= 4/sec
+     * 1. RefinementPipeline -> Refined 48 kHz + Anti-Aliased 16 kHz downsampled stream + SNR/Makeup gain telemetry
+     * 2. FeatureExtractor -> FrameFeatures extracted from refined 16 kHz stream
+     * 3. YamNetGate -> Three-state evaluation (ACTIVE, AMBIENT, SILENT) and cadence evaluation
+     * 4. YamNetClassifier -> Classify 16 kHz PCM window (~15,600 samples)
+     * 5. LabelStabilizer -> Temporal smoothing over 3-5s rolling score vectors & anti-flicker
+     * 6. DisplayLabelFormatter -> "<Class>, <state>" rich diagnostic label
+     * 7. PresenceTracker -> State machine with hysteresis & label stability
+     * 8. DotProEventEmitter -> Emit DoTProEvent objects at rate <= 4/sec
      */
-    private fun processFrame(samples: FloatArray, isEarbud: Boolean) {
+    private fun processFrame(raw48kSamples: FloatArray, isEarbud: Boolean) {
         if (_serviceStateFlow.value != DotProServiceState.ACTIVE) return
 
         val timestamp = System.currentTimeMillis()
 
-        // 1. Feature Extraction (deterministic layer)
-        val features = featureExtractor.processFrame(samples, timestamp)
+        // 1. REFINEMENT PIPELINE (runs on 48 kHz stream)
+        // DC blocker -> 40Hz HPF -> Adaptive per-band gain stage -> Multiband compressor -> Brickwall limiter -> 16kHz downsampler
+        val refinementOutput = refinementPipeline.process(raw48kSamples)
+
+        // Store refined 16 kHz samples into ring buffer for YAMNet
+        audioCapture.append16kSamples(refinementOutput.refined16kSamples)
+
+        // 2. Feature Extraction on refined 16 kHz stream
+        val features = featureExtractor.processFrame(refinementOutput.refined16kSamples, timestamp)
         displayLabelFormatter.recordFrame(features)
         _currentFeaturesFlow.value = features
 
-        // 2. GATING — YamNetGate
-        // YAMNet does NOT run continuously. It is invoked only when the deterministic layer signals
-        // something is worth classifying (activity above baseline, transient spike, or 3s heartbeat).
-        // Between invocations, the last stable label is retained.
-        // When room is silent or steady, YAMNet is idle.
+        // Keep active audio source updated
+        _activeAudioSourceFlow.value = audioCapture.activeAudioSourceName.value
+
+        // 3. GATING & THREE-STATE AMBIENT MODEL (YamNetGate)
         val hasActiveTrack = presenceTracker.hasActiveTracks()
-        val shouldInvokeYamNet = yamNetGate.shouldInvoke(features, hasActiveTrack, timestamp)
+        val shouldInvokeYamNet = yamNetGate.evaluate(
+            features = features,
+            refinedRms = refinementOutput.refinedRms,
+            hardwareFloorRms = refinementOutput.hardwareFloorRms,
+            hasActivePresenceTrack = hasActiveTrack,
+            currentTimestampMs = timestamp
+        )
+
+        val currentState = yamNetGate.currentState
+        _ambientStateFlow.value = currentState
 
         val stabilizedLabel = if (shouldInvokeYamNet) {
-            // Retrieve recent 1-second audio window (~15,600 samples) from ring buffer
-            val recentSamples = audioCapture.getRecentSamples(15600)
-            val scoreVector = yamNetClassifier.classify(recentSamples)
+            // Retrieve recent 1-second 16kHz audio window (~15,600 samples) from ring buffer
+            val recent16k = audioCapture.getRecent16kSamples(15600)
+            val scoreVector = yamNetClassifier.classify(recent16k)
             val stabilized = labelStabilizer.process(scoreVector, features.isTransient, timestamp)
-            _yamNetStatusFlow.value = "ACTIVE (${yamNetGate.lastTriggerReason})"
+            _yamNetStatusFlow.value = "${currentState.name} (${yamNetGate.lastTriggerReason})"
             stabilized
         } else {
             // Retain last stable label while YAMNet is idle
-            _yamNetStatusFlow.value = "IDLE (Gated)"
+            _yamNetStatusFlow.value = "${currentState.name} (${yamNetGate.cadenceDescription})"
             labelStabilizer.getCurrentStableLabel()
         }
 
-        // Format rich display label: "<Class>, <state>"
+        // 4. Format rich display label: "<Class>, <state>"
         val displayLabel = displayLabelFormatter.format(
             yamnetClass = stabilizedLabel.yamnetClass,
             taxonomySignal = stabilizedLabel.taxonomySignal,
@@ -316,15 +368,25 @@ class DotProService : Service() {
         _currentDisplayLabelFlow.value = displayLabel
         _rawYamNetClassFlow.value = stabilizedLabel.yamnetClass
 
-        // 3. Source & Bearing Rules
-        val source = if (isEarbud) Source.AUDIO_EARBUD else Source.AUDIO
-        val bearing = if (isEarbud) {
-            Bearing.FRONT
-        } else {
-            Bearing.UNKNOWN
-        }
+        // 5. Update Telemetry for Diagnostic UI
+        val maxCompReduction = refinementOutput.compressorReductionDb.maxOrNull() ?: 0f
+        _refinementTelemetryFlow.value = RefinementTelemetry(
+            rawRms = refinementOutput.rawRms,
+            refinedRms = refinementOutput.refinedRms,
+            snrDb = refinementOutput.estimatedSnrDb,
+            makeupGainDb = refinementOutput.makeupGainDb,
+            hardwareFloorRms = refinementOutput.hardwareFloorRms,
+            maxCompressorReductionDb = maxCompReduction,
+            ambientState = currentState,
+            cadenceDescription = yamNetGate.cadenceDescription,
+            audioSourceName = audioCapture.activeAudioSourceName.value
+        )
 
-        // 4. Presence Tracking (with hysteresis & label stability)
+        // 6. Source & Bearing Rules
+        val source = if (isEarbud) Source.AUDIO_EARBUD else Source.AUDIO
+        val bearing = if (isEarbud) Bearing.FRONT else Bearing.UNKNOWN
+
+        // 7. Presence Tracking (with hysteresis & label stability)
         val tracks = presenceTracker.update(
             features = features,
             signal = stabilizedLabel.taxonomySignal,
@@ -333,13 +395,37 @@ class DotProService : Service() {
             displayLabel = displayLabel
         )
 
-        // 5. Event Emission (bounded rate <= 4/sec)
-        val newEvents = eventEmitter.processTracks(tracks, source, timestamp)
-        if (newEvents.isNotEmpty()) {
+        // 8. Event Emission (bounded rate <= 4/sec)
+        val newEvents = eventEmitter.processTracks(tracks, source, timestamp, currentState)
+        val allEventsToEmit = mutableListOf<DoTProEvent>()
+        allEventsToEmit.addAll(newEvents)
+
+        // In AMBIENT state on periodic cadence, if no presence track fired, emit ambient facts
+        if (currentState == AmbientState.AMBIENT &&
+            yamNetGate.lastTriggerReason == GateTriggerReason.AMBIENT_CADENCE &&
+            shouldInvokeYamNet
+        ) {
+            val ambientEvent = DoTProEvent(
+                signal = stabilizedLabel.taxonomySignal,
+                source = source,
+                presence = Presence.SUSTAINED,
+                proximity = Proximity.FAR,
+                bearing = bearing,
+                motion = Motion.STATIC,
+                change = false,
+                confidence = stabilizedLabel.confidence,
+                timestampMs = timestamp,
+                displayLabel = displayLabel,
+                state = AmbientState.AMBIENT
+            )
+            allEventsToEmit.add(ambientEvent)
+        }
+
+        if (allEventsToEmit.isNotEmpty()) {
             serviceScope.launch(Dispatchers.Main) {
                 val currentList = _recentEventsFlow.value
                 // Append newest events at the end for chronological scrolling
-                val updated = (currentList + newEvents).takeLast(100)
+                val updated = (currentList + allEventsToEmit).takeLast(100)
                 _recentEventsFlow.value = updated
             }
         }

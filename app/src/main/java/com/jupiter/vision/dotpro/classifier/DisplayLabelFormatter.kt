@@ -1,6 +1,7 @@
 package com.jupiter.vision.dotpro.classifier
 
 import com.jupiter.vision.dotpro.features.FrameFeatures
+import com.jupiter.vision.dotpro.model.AmbientState
 import com.jupiter.vision.dotpro.model.Signal
 import java.util.Locale
 
@@ -43,10 +44,17 @@ class DisplayLabelFormatter {
         yamnetClass: String,
         taxonomySignal: Signal,
         isConfident: Boolean,
-        currentFeatures: FrameFeatures?
+        currentFeatures: FrameFeatures?,
+        ambientState: AmbientState = AmbientState.ACTIVE
     ): String {
+        if (ambientState == AmbientState.SILENT) {
+            return "Silence, stable"
+        }
+
         val rawClassName = if (isConfident && yamnetClass.isNotBlank() && !yamnetClass.equals("Unknown", ignoreCase = true)) {
             yamnetClass
+        } else if (ambientState == AmbientState.AMBIENT) {
+            "Room tone"
         } else {
             when (taxonomySignal) {
                 Signal.TRANSIENT -> "Transient"

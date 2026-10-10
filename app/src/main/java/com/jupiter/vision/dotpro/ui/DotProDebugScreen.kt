@@ -71,6 +71,9 @@ fun DotProDebugScreen(
     val coroutineScope = rememberCoroutineScope()
 
     val serviceState by DotProService.serviceStateFlow.collectAsState()
+    val ambientState by DotProService.ambientStateFlow.collectAsState()
+    val refinementTelemetry by DotProService.refinementTelemetryFlow.collectAsState()
+    val activeAudioSource by DotProService.activeAudioSourceFlow.collectAsState()
     val features by DotProService.currentFeaturesFlow.collectAsState()
     val currentSignal by DotProService.currentSignalFlow.collectAsState()
     val signalConfidence by DotProService.currentSignalConfidenceFlow.collectAsState()
@@ -192,7 +195,8 @@ fun DotProDebugScreen(
             Column(modifier = Modifier.padding(12.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = "STATUS: $serviceState",
@@ -205,17 +209,67 @@ fun DotProDebugScreen(
                         },
                         fontSize = 13.sp
                     )
-                    Text(
-                        text = "PERM: ${if (hasAudioPermission) "GRANTED" else "REQUIRED"}",
-                        fontSize = 12.sp,
-                        color = if (hasAudioPermission) Color(0xFF81C784) else Color(0xFFFFB74D)
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Ambient State Pill
+                        Text(
+                            text = ambientState.name,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = when (ambientState) {
+                                com.jupiter.vision.dotpro.model.AmbientState.ACTIVE -> Color(0xFF00E676)
+                                com.jupiter.vision.dotpro.model.AmbientState.AMBIENT -> Color(0xFF00E5FF)
+                                com.jupiter.vision.dotpro.model.AmbientState.SILENT -> Color(0xFFB0BEC5)
+                            },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(
+                                    when (ambientState) {
+                                        com.jupiter.vision.dotpro.model.AmbientState.ACTIVE -> Color(0x3300E676)
+                                        com.jupiter.vision.dotpro.model.AmbientState.AMBIENT -> Color(0x3300E5FF)
+                                        com.jupiter.vision.dotpro.model.AmbientState.SILENT -> Color(0x33B0BEC5)
+                                    }
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                        // Audio Source Pill
+                        Text(
+                            text = activeAudioSource,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFFFD54F),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(Color(0x33FFD54F))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(6.dp))
 
+                // Refinement Pipeline Telemetry Row
+                val tel = refinementTelemetry
+                val snrDb = tel?.snrDb ?: 0f
+                val makeupDb = tel?.makeupGainDb ?: 0f
+                val floorRms = tel?.hardwareFloorRms ?: 0.003f
+                val compRedDb = tel?.maxCompressorReductionDb ?: 0f
+                val refinedRmsVal = tel?.refinedRms ?: (features?.frameRms ?: 0f)
+                val rawRmsVal = tel?.rawRms ?: (features?.frameRms ?: 0f)
+
+                Text(
+                    text = "REFINEMENT: 48kHz->16kHz | SNR: ${String.format(Locale.US, "%.1f", snrDb)} dB | LIFT: +${String.format(Locale.US, "%.1f", makeupDb)} dB | COMP: -${String.format(Locale.US, "%.1f", compRedDb)} dB | FLOOR: ${String.format(Locale.US, "%.4f", floorRms)}",
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Color(0xFF80CBC4)
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
                 // Raw Energy Readout
-                val rawEnergy = features?.frameRms ?: 0f
+                val rawEnergy = refinedRmsVal
                 val baseline = features?.baselineRms ?: 0f
                 val changeMag = features?.changeMagnitude ?: 0f
                 val velocity = features?.envelopeVelocity ?: 0f
@@ -223,8 +277,8 @@ fun DotProDebugScreen(
                 val isTransient = features?.isTransient ?: false
 
                 Text(
-                    text = "RAW ENERGY (RMS): ${String.format(Locale.US, "%.3f", rawEnergy)} | BASELINE: ${String.format(Locale.US, "%.3f", baseline)} | DELTA: ${String.format(Locale.US, "%.3f", changeMag)}",
-                    fontSize = 11.sp,
+                    text = "REFINED RMS: ${String.format(Locale.US, "%.3f", rawEnergy)} (RAW: ${String.format(Locale.US, "%.3f", rawRmsVal)}) | BASELINE: ${String.format(Locale.US, "%.3f", baseline)} | DELTA: ${String.format(Locale.US, "%.3f", changeMag)}",
+                    fontSize = 10.5.sp,
                     fontFamily = FontFamily.Monospace,
                     color = Color.LightGray
                 )
@@ -233,7 +287,7 @@ fun DotProDebugScreen(
                 LinearProgressIndicator(
                     progress = { (rawEnergy * 8f).coerceIn(0f, 1f) },
                     modifier = Modifier.fillMaxWidth().height(6.dp),
-                    color = if (isTransient) Color(0xFFFF5252) else Color(0xFF00E676),
+                    color = if (isTransient) Color(0xFFFF5252) else if (ambientState == com.jupiter.vision.dotpro.model.AmbientState.AMBIENT) Color(0xFF00E5FF) else Color(0xFF00E676),
                     trackColor = Color(0xFF333333)
                 )
 
@@ -409,6 +463,12 @@ private fun EventItemCard(event: DoTProEvent) {
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.5.sp,
                         color = Color(0xFF80D8FF)
+                    )
+                    Text(
+                        text = "[${event.state.name}]",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (event.state == com.jupiter.vision.dotpro.model.AmbientState.AMBIENT) Color(0xFF00E5FF) else Color(0xFF00E676)
                     )
                     Text(
                         text = "[${event.signal.name}]",

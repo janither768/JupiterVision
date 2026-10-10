@@ -33,7 +33,12 @@ class DotProEventEmitter {
     /**
      * Process updated presence tracks and emit DoTProEvent objects within rate limits.
      */
-    fun processTracks(tracks: List<PresenceTrack>, source: Source, currentTimestampMs: Long): List<DoTProEvent> {
+    fun processTracks(
+        tracks: List<PresenceTrack>,
+        source: Source,
+        currentTimestampMs: Long,
+        ambientState: com.jupiter.vision.dotpro.model.AmbientState = com.jupiter.vision.dotpro.model.AmbientState.ACTIVE
+    ): List<DoTProEvent> {
         val emittedList = mutableListOf<DoTProEvent>()
 
         for (track in tracks) {
@@ -57,7 +62,8 @@ class DotProEventEmitter {
                         change = isChange,
                         confidence = track.overallConfidence,
                         timestampMs = currentTimestampMs,
-                        displayLabel = track.displayLabel
+                        displayLabel = track.displayLabel,
+                        state = ambientState
                     )
 
                     lastEmitTimestampMs = currentTimestampMs

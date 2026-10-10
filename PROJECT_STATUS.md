@@ -1,19 +1,21 @@
 # JupiterVision — Project Status & Architecture Report
 
-**Version:** 2112.17_II  
-**Target Build:** `Jupitervision_2112.17_II.apk`  
-**Platform:** Android (Jetpack Compose + Single Hardware Canvas Engine)  
+**Version:** 2112.18 DoTPro  
+**Target Build:** `2112.18_DoTPro.apk`  
+**Platform:** Android (Jetpack Compose + Single Hardware Canvas Engine + DoTPro Acoustic Reflex)  
 **Repository:** `janither768/JupiterVision`  
 
 ---
 
 ## 1. Executive Summary
 
-**JupiterVision 2112.17_II** refines the dual-page launcher:
-- **Band 1 Full Map Fill**: Band 1 is fully filled edge-to-edge by the satellite map. The top edge and the junction between Band 1 and Band 2 are blended with smooth multi-stop gradient fades scaling down to `#1A1A1A`.
-- **Band 3 Cinematic Separator**: The 1dp vertical divider in Band 3 is cleanly cut before the top and bottom edges (18dp inset) for a refined, floating industrial aesthetic.
-- **Dual-Page Horizontal Pager**: Smooth horizontal page transitions between Vision Home (Page 0) and Tile Grid (Page 1) with full edge panel gestures preserved on the right screen border.
-- **Unified Backdrop**: Band 3 shares the identical dimmed wallpaper backdrop (`alpha = 0.22` over `#000000`) used in the Tile Grid.
+**JupiterVision 2112.18 DoTPro** integrates the complete Downtown Proximity (DoTPro) acoustic reflex and refinement pipeline:
+- **Audio Source Selection**: Prioritizes `MediaRecorder.AudioSource.UNPROCESSED` (disabling AGC/AEC/NS) with fallback to `VOICE_RECOGNITION` and `MIC`. Real-time active source surfacing.
+- **Refinement Pipeline (`RefinementPipeline.kt`)**: 48 kHz digital signal chain: DC blocker -> 40 Hz 2nd-order Butterworth HPF -> Adaptive 5-band gain stage (+18 dB cap, no spectral subtraction; room tone IS signal) -> 4-band gentle compressor (1.8:1) -> Brickwall limiter (-1 dBFS) -> 3:1 anti-aliasing decimation FIR downsampler to 16 kHz.
+- **SNR Measurement**: Relative to estimated mic hardware self-noise floor (tracked over initial startup).
+- **Three-State Ambient Model**: `ACTIVE` (presence tracks firing; immediate classification), `AMBIENT` (stable room tone; 7-10s cadence), and `SILENT` (below floor; idle YAMNet).
+- **YAMNet Classifier (`YamNetClassifier.kt`)**: 521 AudioSet classes, 16 kHz PCM windows, explicit 11-class taxonomy mapping, 3-5s rolling score temporal smoothing, and "<Class>, <state>" display label formatting.
+- **Diagnostic UI Surface (`DotProDebugScreen.kt`)**: Real-time refinement telemetry (SNR, lift gain, compressor reduction, floor RMS), audio source and ambient state pills, and auto-scrolling live event log.
 
 ---
 
