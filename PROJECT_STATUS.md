@@ -1,30 +1,24 @@
 # JupiterVision — Project Status & Architecture Report
 
-**Version:** 2112.18 DoTPro-GEN-evolve  
-**Target Build:** `2112.18_DoTPro-GEN-evolve.apk`  
-**Platform:** Android (Jetpack Compose + Single Hardware Canvas Engine + DoTPro Acoustic Reflex)  
+**Version:** 2112.18 DoTProXTraceMachine  
+**Target Build:** `2112.18_DoTProXTraceMachine.apk`  
+**Platform:** Android (Jetpack Compose + Single Hardware Canvas Engine + DoTPro + TraceMachine Gen 1)  
 **Repository:** `janither768/JupiterVision`  
 
 ---
 
 ## 1. Executive Summary
 
-**JupiterVision 2112.18 DoTPro-GEN-evolve** implements the complete Scale-Normalization architecture, dynamic reference tracking, SNR-gated SILENT protection, 5-tier battery/thermal throttling, and low-end Android DSP tuning:
-- **Audio Capture & Low-End Fallback (`AudioCapture.kt`)**: Prioritizes `MediaRecorder.AudioSource.UNPROCESSED` (bypassing hardware AGC/AEC/NS) -> `VOICE_RECOGNITION` -> `MIC` (surfaced with warning). Supports 48 kHz native with fallback to 44.1 kHz + in-pipeline linear resampling.
-- **Refinement Pipeline (`RefinementPipeline.kt`)**: Two-stage SCALE then SHAPE architecture:
-  - DC blocker (~5 Hz single-pole)
-  - 40 Hz 2nd-order Butterworth HPF (RBJ biquad)
-  - Short-window loudness estimator (rolling RMS over 2.5s in dBFS)
-  - Dynamic reference tracker (median of loudness over 25s via rolling sorted buffer, O(log n))
-  - Scale normalization ($offset = TARGET\_LEVEL - reference\_dB$, clamped -6 dB to +40 dB)
-  - Adaptive per-band EQ tilt on normalized signal (5 bands via Linkwitz-Riley LR4 crossovers at 120 Hz, 500 Hz, 2 kHz, 6 kHz; capped at +12 dB per band; disabled in SILENT)
-  - 5-band compressor (attack ~50ms, release ~300ms, 1.8:1 ratio, max -6 dB reduction per band)
-  - Brickwall limiter (-1 dBFS ceiling, 2ms lookahead delay line, tanh saturation)
-  - Downsampler to 16 kHz (anti-aliasing FIR filter and 3:1 decimation)
-- **SNR Gate & SILENT State Protection**: Hardware self-noise floor tracked over first 3 seconds and persisted. Sustained SNR <= 3 dB declares SILENT, disabling per-band boost and silencing YAMNet.
-- **Battery & Thermal Tiers (`BatteryThermalManager.kt`)**: 5 tiers (Tier 0 to Tier 4) with hysteretic transitions managing YAMNet cadence (immediate / 7s / 15s / suspended / idle).
-- **YAMNet ML Optimization (`YamNetClassifier.kt`)**: Threads capped at 2, NNAPI attempted first with silent fallback to mandatory XNNPACK delegate.
-- **Diagnostic UI Surface (`DotProDebugScreen.kt`)**: Prominent state banner (ACTIVE / AMBIENT / SILENT), live reference level (dBFS), normalization offset (+/- dB), per-band EQ lift bars, SNR, gate state, battery tier, thermal status, active source, delegate, cadence, side-by-side raw vs normalized RMS sparklines, and auto-scrolling live event log.
+**JupiterVision 2112.18 DoTProXTraceMachine** introduces:
+- **Deliverable 1 — Module Changer Plate (`ModuleChangerPlate.kt`)**: A radial dial living as a silver sliver on the left edge of the Module Page. Unfurls into a 140° arc spanning -70° to +70° with angular selection, soft haptic feedback (`CLOCK_TICK` on touch and slot change, `CONTEXT_CLICK` on release), background scrim dimming (0 -> 0.55), white glow and bezier scaling (1.15x) on selected item, and immediate bezier retraction.
+- **Deliverable 2 — TraceMachine Gen 1 (`TraceMachineScreen.kt`, `TraceEstimatorEngine.kt`, `TraceMachineService.kt`)**: Pure inertial dead-reckoning motion trail visualizer:
+  - Swing-axis latch during first 8 steps via power iteration on dynamic accelerometer covariance.
+  - Per-step gyro yaw integration around latched gravity axis, reset per step (zero continuous drift).
+  - ZUPT (Zero-Velocity Update) automatic stillness anchors after 3.0s stillness.
+  - Manual anchor pin drops with instantaneous confidence reset.
+  - Custom hardware-accelerated Canvas living trail with confidence decay, concentric range rings, and heading indicator.
+  - Minimalist neutral palette (#1A1A1A, white typography, font Inter, zero accent color, no cards/elevation).
+- **Module Page Host (`ModulePageHost.kt`)**: Wires DoTPro and TraceMachine seamlessly onto Page 0 of the HorizontalPager, fully switchable via the Module Changer Plate overlay.
 
 ---
 

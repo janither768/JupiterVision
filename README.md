@@ -1,22 +1,20 @@
-# JupiterVision 2112.18 DoTPro-GEN-evolve
+# JupiterVision 2112.18 DoTProXTraceMachine
 
 [![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://android.com)
 [![Kotlin](https://img.shields.io/badge/Language-Kotlin-blue.svg)](https://kotlinlang.org)
 [![Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-purple.svg)](https://developer.android.com/jetpack/compose)
 
-JupiterVision is a futuristic Android launcher featuring a hardware-accelerated single-canvas tile grid, intelligent application categorization folders, high-performance GPU matrix focus overlays, procedural wallpaper-per-tile rendering, and the DoTPro near-field acoustic reflex engine.
+JupiterVision is a futuristic Android launcher featuring a hardware-accelerated single-canvas tile grid, intelligent application categorization folders, high-performance GPU matrix focus overlays, procedural wallpaper-per-tile rendering, the DoTPro near-field acoustic reflex engine, and TraceMachine Gen 1 inertial dead-reckoning.
 
-## ✨ Latest Release: 2112.18 DoTPro-GEN-evolve
+## ✨ Latest Release: 2112.18 DoTProXTraceMachine
 
-Download the latest APK: **[2112.18_DoTPro-GEN-evolve.apk](2112.18_DoTPro-GEN-evolve.apk)**
+Download the latest APK: **[2112.18_DoTProXTraceMachine.apk](2112.18_DoTProXTraceMachine.apk)**
 
 ### Key Highlights
-- **Fluid Folder Lifecycle**: Tap to un-dim icons and slide labels away; touch any app quadrant to launch immediately. Auto-returns after 10 seconds of inactivity.
-- **GPU Matrix Focus Mode (Zero Lag)**: 60/120 FPS bezier-animated focus overlay using GPU matrix scaling and translation without layout passes.
-- **Borderless Floating Modern UI**: Clean floating geometry with compact dimensions.
-- **Area Gesture Swiping**: Swipe left anywhere across the overlay to access dedicated light-mode mini-apps; swipe right to return to app options and notifications.
-- **Wallpaper Per-Tile Engine**: Individual tile-sampled wallpaper textures with spatial scaling and accent color tinting (excluding folders).
-- **Vibrant Palette Engine**: Wallpaper color extraction maintaining punchy saturation and brightness, with dedicated system app defaults.
+- **Module Changer Plate**: Radial dial on left edge sliver; unfurls into a 140° arc (-70° to +70°) with angular selection, soft buttery haptics, and smooth bezier transition between DoTPro and TraceMachine.
+- **TraceMachine Gen 1**: Inertial path dead-reckoning tracker using motion sensors (accelerometer, gyroscope, step detector) with swing-axis calibration, per-step gyro yaw integration, and automatic ZUPT stillness anchors.
+- **Living Canvas Trail**: Hardware-accelerated Canvas renderer with confidence decay, concentric range rings, and heading vector.
+- **Single Neutral Theme**: Pure #1A1A1A neutral background, white typography with Inter font, and zero accent colors.
 
 ## 🚀 Building & Running
 

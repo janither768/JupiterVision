@@ -85,6 +85,7 @@ import com.jupiter.vision.ui.TileGrid
 import com.jupiter.vision.ui.TilePropertiesOverlay
 import com.jupiter.vision.ui.screens.AllAppsScreen
 import com.jupiter.vision.ui.screens.DoTProModuleScreen
+import com.jupiter.vision.ui.screens.ModulePageHost
 import com.jupiter.vision.ui.screens.SettingsScreen
 import com.jupiter.vision.ui.screens.VisionHomeScreen
 import com.jupiter.vision.ui.screens.VisionHomeViewModel
@@ -526,8 +527,8 @@ private fun MainLauncherPagerScreen(
         ) { pageIndex ->
             when (pageIndex) {
                 0 -> {
-                    // PAGE 0: DoTPro Module Page (Left of Vision Home)
-                    DoTProModuleScreen(
+                    // PAGE 0: Module Page (DoTPro & TraceMachine via ModuleChangerPlate)
+                    ModulePageHost(
                         modifier = Modifier.fillMaxSize()
                     )
                 }

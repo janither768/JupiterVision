@@ -26,6 +26,7 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -80,6 +81,16 @@
             android:name=".dotpro.service.DotProService"
             android:foregroundServiceType="microphone"
             android:exported="false" />
+
+        <!-- TraceMachine Gen 1 Inertial Path Dead-Reckoning Foreground Service -->
+        <service
+            android:name=".tracemachine.service.TraceMachineService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="dead_reckoning_inertial_motion_path_tracker" />
+        </service>
 
         <!-- Vision Engine Boot Receiver -->
         <receiver
